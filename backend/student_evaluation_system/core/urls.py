@@ -33,11 +33,11 @@ router.register(
 )
 router.register(r"file-import/program-outcomes", views.ProgramOutcomesImportViewSet, basename="file-import-program-outcomes")
 router.register(r"permissions", views.InstructorPermissionViewSet, basename="instructor-permission")
+router.register(r"weight-suggestion", views.WeightSuggestionViewSet, basename="weightsuggestion")
 
 urlpatterns = [
     path("", include(router.urls)),
     path("analytics/program-stats/", views.ProgramStatsView.as_view(), name="program-stats"),
     # Legacy endpoints for backward compatibility
     path("students/", views.StudentListView.as_view(), name="student-list-legacy"),
-    path("students/<int:pk>/", views.StudentDetailView.as_view(), name="student-detail-legacy"),
 ]

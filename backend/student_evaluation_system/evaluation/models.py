@@ -31,6 +31,10 @@ class Assessment(TimeStampedModel):
     created_by = models.ForeignKey(
         settings.AUTH_USER_MODEL, on_delete=models.SET_NULL, null=True, related_name="created_assessments"
     )
+    description = models.TextField(
+        blank=True,
+        help_text="Single-sentence description of what this assessment evaluates, used for AI weight correlation",
+    )
 
     class Meta:
         ordering = ["course", "date"]
@@ -49,7 +53,7 @@ class AssessmentLearningOutcomeMapping(models.Model):
 
     assessment = models.ForeignKey(Assessment, on_delete=models.CASCADE, related_name="lo_mappings")
     learning_outcome = models.ForeignKey(LearningOutcome, on_delete=models.CASCADE, related_name="assessment_mappings")
-    weight = models.FloatField(help_text="0.0 to 1.0", validators=[MinValueValidator(0.0), MaxValueValidator(1.0)])
+    weight = models.FloatField(help_text="0 to 5", validators=[MinValueValidator(0), MaxValueValidator(5)])
 
     class Meta:
         ordering = ["assessment", "learning_outcome"]

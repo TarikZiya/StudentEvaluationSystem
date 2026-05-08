@@ -12,6 +12,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 from datetime import timedelta
+from django.core.exceptions import ImproperlyConfigured
 from environs import Env
 
 # Initialize environs
@@ -33,10 +34,13 @@ if env_path.exists():
 
 # SECURITY WARNING: keep the secret key used in production secret!
 # Generate a secure key with: python -c "import secrets; print(secrets.token_urlsafe(50))"
-SECRET_KEY = env("SECRET_KEY", default="django-insecure-dev-key-only-for-local-development-change-in-production")
+SECRET_KEY = env("SECRET_KEY")
 
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = env.bool("DEBUG", default=False)
+
+if not DEBUG and SECRET_KEY == "django-insecure-dev-key-only-for-local-development-change-in-production":
+    raise ImproperlyConfigured("SECRET_KEY must be set to a secure value in production")
 
 # SECURITY WARNING: don't allow all hosts in production!
 ALLOWED_HOSTS = env.list("ALLOWED_HOSTS", default=["localhost", "127.0.0.1"])
@@ -344,6 +348,19 @@ CELERY_TASK_TIME_LIMIT = env.int("CELERY_TASK_TIME_LIMIT", default=900)
 CELERY_TASK_SOFT_TIME_LIMIT = env.int("CELERY_TASK_SOFT_TIME_LIMIT", default=840)
 CELERY_TASK_ALWAYS_EAGER = env.bool("CELERY_TASK_ALWAYS_EAGER", default=False)
 CELERY_TASK_EAGER_PROPAGATES = env.bool("CELERY_TASK_EAGER_PROPAGATES", default=True)
+
+
+# =============================================================================
+# CACHE SETTINGS
+# =============================================================================
+
+CACHES = {
+    "default": {
+        "BACKEND": "django.core.cache.backends.redis.RedisCache",
+        "LOCATION": env("REDIS_CACHE_URL", default="redis://redis:6379/1"),
+        "TIMEOUT": 300,  # 5 minute default TTL
+    }
+}
 
 
 # =============================================================================

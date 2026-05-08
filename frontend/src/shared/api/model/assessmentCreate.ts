@@ -18,7 +18,7 @@ export interface AssessmentCreate {
   date?: string;
   /**
    * @minimum 0
-   * @maximum 9223372036854776000
+   * @maximum 2147483647
    */
   total_score?: number;
   /**
@@ -28,4 +28,6 @@ export interface AssessmentCreate {
    */
   weight?: number;
   assessment_type?: AssessmentTypeEnum;
+  /** Single-sentence description of what this assessment evaluates, used for AI weight correlation */
+  description?: string;
 }

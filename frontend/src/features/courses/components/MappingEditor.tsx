@@ -25,28 +25,32 @@ import {
 import {
   useEvaluationAssessmentsList,
   useEvaluationAssessmentLoMappingsList,
-  useEvaluationAssessmentLoMappingsCreate,
-  useEvaluationAssessmentLoMappingsPartialUpdate,
-  useEvaluationAssessmentLoMappingsDestroy,
+  useEvaluationAssessmentLoMappingsBulkSyncCreate,
+  getEvaluationAssessmentLoMappingsListQueryKey,
 } from '../../../shared/api/generated/evaluation/evaluation'
 import {
   useCoreLoPoMappingsList,
-  useCoreLoPoMappingsCreate,
-  useCoreLoPoMappingsPartialUpdate,
-  useCoreLoPoMappingsDestroy,
+  useCoreLoPoMappingsBulkSyncCreate,
   useCoreCoursesLearningOutcomesRetrieve,
+  getCoreLoPoMappingsListQueryKey,
 } from '../../../shared/api/generated/core/core'
 import {
   useCoreProgramOutcomesList,
 } from '../../../shared/api/generated/outcomes/outcomes'
+import {
+  useV1CoreWeightSuggestionCreate,
+} from '../../../shared/api/generated/v1/v1'
+import { v1CoreWeightSuggestionRetrieve } from '../../../shared/api/generated/v1/v1'
 import type {
   Assessment as OrvalAssessment,
   AssessmentLearningOutcomeMapping,
   LearningOutcomeProgramOutcomeMapping,
   CoreLearningOutcome,
   ProgramOutcome,
-  EvaluationLearningOutcome,
+  WeightSuggestionJobResult,
 } from '../../../shared/api/model'
+import { useRecomputeJobs } from '../../../shared/contexts/RecomputeJobsContext'
+import { AssessmentDescriptionsModal } from './AssessmentDescriptionsModal'
 
 type Assessment = OrvalAssessment & { assessment_type: string }
 type LearningOutcome = CoreLearningOutcome
@@ -83,22 +87,11 @@ const toDragItemData = (value: unknown): DragItemData | null => {
   }
 }
 
-const getErrorMessage = (error: unknown, fallback: string): string => {
-  if (isRecord(error) && isRecord(error.response) && isRecord(error.response.data)) {
-    const data = error.response.data
-    if (Array.isArray(data.non_field_errors) && typeof data.non_field_errors[0] === 'string') {
-      return data.non_field_errors[0]
-    }
-    if (typeof data.detail === 'string') {
-      return data.detail
-    }
-  }
-
-  return fallback
-}
+const clone = <T,>(arr: T[]): T[] => arr.map(item => ({ ...item }))
 
 interface MappingEditorProps {
   courseId: number
+  termId: number
   onClose?: () => void
 }
 
@@ -174,8 +167,6 @@ const WeightModal = ({
   title,
   fromLabel,
   toLabel,
-  maxWeight = 1,
-  usedWeight = 0,
   editMode = false,
   initialWeight = 0,
 }: {
@@ -185,48 +176,31 @@ const WeightModal = ({
   title: string
   fromLabel: string
   toLabel: string
-  maxWeight?: number
-  usedWeight?: number
   editMode?: boolean
   initialWeight?: number
 }) => {
-  // In edit mode, exclude current mapping from used weight calculation
-  const effectiveUsedWeight = editMode ? usedWeight - initialWeight : usedWeight
-  // Fix floating point precision issues by rounding to 2 decimal places
-  const remainingWeight = Math.round(Math.max(0, maxWeight - effectiveUsedWeight) * 100) / 100
   const [weight, setWeight] = useState(0)
   const [isInitialized, setIsInitialized] = useState(false)
 
-  // Slider step and max allowed - remainingWeight already accounts for edit mode
-  const step = 0.05
-  const maxAllowedWeight = Math.max(0, Math.min(maxWeight, remainingWeight))
-  // Clamp max to proper step value (round to nearest step)
-  const maxSliderValue = Math.round(maxAllowedWeight / step) * step
+  const step = 1
+  const maxAllowedWeight = 5
 
-  // Reset weight when modal opens with new remaining weight
+  // Reset weight when modal opens
   useEffect(() => {
     if (isOpen && !isInitialized) {
       if (editMode && initialWeight > 0) {
-        // In edit mode, start with current weight
-        const roundedWeight = Math.round(initialWeight / step) * step
-        setWeight(roundedWeight)
+        setWeight(Math.round(initialWeight))
       } else {
-        // Set initial weight to half of remaining, rounded to step
-        const defaultWeight = Math.min(0.5, maxSliderValue)
-        const roundedWeight = Math.round(defaultWeight / step) * step
-        setWeight(roundedWeight)
+        setWeight(1)
       }
       setIsInitialized(true)
     }
     if (!isOpen) {
       setIsInitialized(false)
     }
-  }, [isOpen, maxSliderValue, isInitialized, editMode, initialWeight])
+  }, [isOpen, isInitialized, editMode, initialWeight])
 
   if (!isOpen) return null
-
-  // Check if weight exceeds allowed maximum (with small tolerance for floating point precision)
-  const isOverLimit = weight > maxSliderValue + 0.001
 
   return (
     <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
@@ -239,26 +213,6 @@ const WeightModal = ({
             <span className="font-medium">{toLabel}</span>
           </div>
 
-          {/* Weight budget info */}
-          <div className="p-3 bg-gray-50 rounded-lg text-sm">
-            <div className="flex justify-between text-gray-600">
-              <span>Already allocated{editMode ? ' (excluding this)' : ''}:</span>
-              <span className="font-medium">{(effectiveUsedWeight * 100).toFixed(0)}%</span>
-            </div>
-            <div className="flex justify-between text-gray-600">
-              <span>Available before edit:</span>
-              <span className={`font-medium ${remainingWeight <= 0 ? 'text-red-600' : 'text-green-600'}`}>
-                {(remainingWeight * 100).toFixed(0)}%
-              </span>
-            </div>
-            <div className="flex justify-between text-gray-600">
-              <span>Total after save:</span>
-              <span className="font-medium">
-                {((effectiveUsedWeight + weight) * 100).toFixed(0)}%
-              </span>
-            </div>
-          </div>
-
           <div>
             <label className="block text-sm font-medium text-gray-700 mb-2">
               Weight for this mapping
@@ -267,33 +221,24 @@ const WeightModal = ({
               id="weight-slider"
               type="range"
               min="0"
-              max={maxSliderValue}
+              max={maxAllowedWeight}
               step={step}
-              value={Math.min(Math.max(0, weight), maxSliderValue)}
+              value={Math.min(Math.max(0, weight), maxAllowedWeight)}
               onChange={(e) => {
-                const raw = parseFloat(e.target.value)
-                const rounded = Math.round(raw / step) * step
-                const clamped = Math.min(Math.max(0, rounded), maxSliderValue)
-                setWeight(clamped)
+                const raw = parseInt(e.target.value, 10)
+                setWeight(raw)
               }}
               className="w-full"
-              aria-label="Weight percentage"
-              disabled={!editMode && remainingWeight <= 0}
+              aria-label="Weight"
             />
             <div className="flex justify-between text-sm text-gray-500 mt-1">
-              <span>0%</span>
-              <span className={`font-bold ${isOverLimit ? 'text-red-600' : 'text-primary-600'}`}>
-                {(weight * 100).toFixed(0)}%
+              <span>0</span>
+              <span className="font-bold text-primary-600">
+                {weight}
               </span>
-              <span>{(maxSliderValue * 100).toFixed(0)}%</span>
+              <span>{maxAllowedWeight}</span>
             </div>
           </div>
-
-          {remainingWeight <= 0 && !editMode && (
-            <p className="text-sm text-red-600">
-              No remaining weight available. Total weight is already at 100%.
-            </p>
-          )}
 
           <div className="flex gap-3 mt-6">
             <button
@@ -304,8 +249,7 @@ const WeightModal = ({
             </button>
             <button
               onClick={() => {
-                // Ensure weight does not exceed maxAllowedWeight
-                const finalWeight = Math.min(weight, maxSliderValue)
+                const finalWeight = weight
                 onConfirm(finalWeight)
               }}
               disabled={weight <= 0}
@@ -321,13 +265,12 @@ const WeightModal = ({
 }
 
 // Main Component
-const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
-  const queryClient = useQueryClient()
+const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
 
   // Data fetching
   const assessmentsQuery = useEvaluationAssessmentsList({ course: courseId })
   const losQuery = useCoreCoursesLearningOutcomesRetrieve(courseId)
-  const posQuery = useCoreProgramOutcomesList()
+  const posQuery = useCoreProgramOutcomesList({ term: termId })
   const aloQuery = useEvaluationAssessmentLoMappingsList(undefined, {
     request: { params: { course: courseId } },
   })
@@ -348,33 +291,46 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
     return toList<ProgramOutcome>(posQuery.data)
   }, [posQuery.data])
 
-  // Local state for mappings (for optimistic updates)
-  const [assessmentLOMappings, setAssessmentLOMappings] = useState<AssessmentLearningOutcomeMapping[]>([])
-  const [loPOMappings, setLoPOMappings] = useState<LearningOutcomeProgramOutcomeMapping[]>([])
+  // Initial state (frozen snapshot from server on modal open)
+  const [initialAssessmentLOMappings, setInitialAssessmentLOMappings] = useState<AssessmentLearningOutcomeMapping[]>([])
+  const [initialLoPOMappings, setInitialLoPOMappings] = useState<LearningOutcomeProgramOutcomeMapping[]>([])
+  // Working state (editable copy, all mutations applied here)
+  const [workingAssessmentLOMappings, setWorkingAssessmentLOMappings] = useState<AssessmentLearningOutcomeMapping[]>([])
+  const [workingLoPOMappings, setWorkingLoPOMappings] = useState<LearningOutcomeProgramOutcomeMapping[]>([])
 
-  // Sync mapping data from queries
-  useEffect(() => {
-    if (aloQuery.data) {
-      setAssessmentLOMappings(toList<AssessmentLearningOutcomeMapping>(aloQuery.data))
-    }
-  }, [aloQuery.data])
+  const [hasInitialized, setHasInitialized] = useState(false)
 
   useEffect(() => {
-    if (lopoQuery.data) {
-      setLoPOMappings(toList<LearningOutcomeProgramOutcomeMapping>(lopoQuery.data))
+    if (!hasInitialized && aloQuery.data && lopoQuery.data && !aloQuery.isFetching && !lopoQuery.isFetching) {
+      const aloData = toList<AssessmentLearningOutcomeMapping>(aloQuery.data)
+      const lopoData = toList<LearningOutcomeProgramOutcomeMapping>(lopoQuery.data)
+      setInitialAssessmentLOMappings(clone(aloData))
+      setInitialLoPOMappings(clone(lopoData))
+      setWorkingAssessmentLOMappings(clone(aloData))
+      setWorkingLoPOMappings(clone(lopoData))
+      setHasInitialized(true)
     }
-  }, [lopoQuery.data])
+  }, [aloQuery.data, lopoQuery.data, aloQuery.isFetching, lopoQuery.isFetching, hasInitialized])
 
   // Loading state
   const isLoading = assessmentsQuery.isLoading || losQuery.isLoading || posQuery.isLoading || aloQuery.isLoading || lopoQuery.isLoading
 
-  // Mutations
-  const aloCreateMutation = useEvaluationAssessmentLoMappingsCreate()
-  const aloPartialUpdateMutation = useEvaluationAssessmentLoMappingsPartialUpdate()
-  const aloDestroyMutation = useEvaluationAssessmentLoMappingsDestroy()
-  const lopoCreateMutation = useCoreLoPoMappingsCreate()
-  const lopoPartialUpdateMutation = useCoreLoPoMappingsPartialUpdate()
-  const lopoDestroyMutation = useCoreLoPoMappingsDestroy()
+  const [isSaving, setIsSaving] = useState(false)
+  const [showCloseConfirm, setShowCloseConfirm] = useState(false)
+
+  const [isSuggesting, setIsSuggesting] = useState(false)
+  const [suggestionError, setSuggestionError] = useState<string | null>(null)
+
+  const [showDescriptionsModal, setShowDescriptionsModal] = useState(false)
+
+  const aloBulkSyncMutation = useEvaluationAssessmentLoMappingsBulkSyncCreate()
+  const lopoBulkSyncMutation = useCoreLoPoMappingsBulkSyncCreate()
+
+  const queryClient = useQueryClient()
+
+  const { enqueueJobs } = useRecomputeJobs()
+
+  const createSuggestionMutation = useV1CoreWeightSuggestionCreate()
 
   const [activeId, setActiveId] = useState<string | null>(null)
   const [activeData, setActiveData] = useState<DragItemData | null>(null)
@@ -387,7 +343,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
     toId: number
     fromLabel: string
     toLabel: string
-    usedWeight: number
     editMode?: boolean
     mappingId?: number
     initialWeight?: number
@@ -424,14 +379,9 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
       const lo = learningOutcomes.find((l) => l.id === loId)
 
       // Check if mapping already exists
-      const existingMapping = assessmentLOMappings.find(
+      const existingMapping = workingAssessmentLOMappings.find(
         (m) => m.assessment === assessmentId && m.learning_outcome?.id === loId
       )
-
-      // Calculate already used weight for this LO (sum of all assessment mappings for this LO)
-      const usedWeight = assessmentLOMappings
-        .filter((m) => m.learning_outcome?.id === loId)
-        .reduce((sum, m) => sum + (m.weight || 0), 0)
 
       if (existingMapping) {
         // Edit existing mapping
@@ -442,7 +392,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           toId: loId,
           fromLabel: assessment?.name || '',
           toLabel: lo?.code || '',
-          usedWeight,
           editMode: true,
           mappingId: existingMapping.id,
           initialWeight: existingMapping.weight,
@@ -456,7 +405,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           toId: loId,
           fromLabel: assessment?.name || '',
           toLabel: lo?.code || '',
-          usedWeight,
         })
       }
     }
@@ -469,14 +417,9 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
       const po = programOutcomes.find((p) => p.id === poId)
 
       // Check if mapping already exists
-      const existingMapping = loPOMappings.find(
+      const existingMapping = workingLoPOMappings.find(
         (m) => m.learning_outcome?.id === loId && m.program_outcome?.id === poId
       )
-
-      // Calculate already used weight for this PO (sum of all LO mappings for this PO)
-      const usedWeight = loPOMappings
-        .filter((m) => m.program_outcome?.id === poId)
-        .reduce((sum, m) => sum + m.weight, 0)
 
       if (existingMapping) {
         // Edit existing mapping
@@ -487,7 +430,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           toId: poId,
           fromLabel: lo?.code || '',
           toLabel: po?.code || '',
-          usedWeight,
           editMode: true,
           mappingId: existingMapping.id,
           initialWeight: existingMapping.weight,
@@ -501,7 +443,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           toId: poId,
           fromLabel: lo?.code || '',
           toLabel: po?.code || '',
-          usedWeight,
         })
       }
     }
@@ -509,126 +450,339 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
     setActiveId(null)
   }
 
-  const handleCreateOrUpdateMapping = async (weight: number) => {
-    if (!weightModal) return
+  const computeDiff = <T extends { id: number; weight: number }>(
+    working: T[],
+    initial: T[]
+  ): { creates: T[]; updates: { id: number; weight: number }[]; deletes: number[] } => {
+    const workingMap = new Map(working.map(m => [m.id, m]))
+    const initialMap = new Map(initial.map(m => [m.id, m]))
+    const workingIds = new Set(workingMap.keys())
+    const initialIds = new Set(initialMap.keys())
 
+    const creates = working.filter(m => m.id < 0)
+    const deletes = initial.filter(m => !workingIds.has(m.id)).map(m => m.id)
+    const updates = working
+      .filter(m => m.id > 0 && initialIds.has(m.id))
+      .filter(m => {
+        const initialItem = initialMap.get(m.id)
+        return initialItem && initialItem.weight !== m.weight
+      })
+      .map(m => ({ id: m.id, weight: m.weight }))
+
+    return { creates, updates, deletes }
+  }
+
+  const hasChanges = useMemo(() => {
+    const aloDiff = computeDiff(workingAssessmentLOMappings, initialAssessmentLOMappings)
+    const lopoDiff = computeDiff(workingLoPOMappings, initialLoPOMappings)
+    return (
+      aloDiff.creates.length > 0 ||
+      aloDiff.updates.length > 0 ||
+      aloDiff.deletes.length > 0 ||
+      lopoDiff.creates.length > 0 ||
+      lopoDiff.updates.length > 0 ||
+      lopoDiff.deletes.length > 0
+    )
+  }, [workingAssessmentLOMappings, initialAssessmentLOMappings, workingLoPOMappings, initialLoPOMappings])
+
+  const handleSave = async (closeAfterSave = false) => {
+    setIsSaving(true)
     try {
-      if (weightModal.editMode && weightModal.mappingId) {
-        if (weightModal.type === 'assessment-lo') {
-          const previousMappings = assessmentLOMappings
-          setAssessmentLOMappings(assessmentLOMappings.map((m) =>
-            m.id === weightModal.mappingId ? { ...m, weight } : m
-          ))
-          setWeightModal(null)
+      const aloDiff = computeDiff(workingAssessmentLOMappings, initialAssessmentLOMappings)
+      const lopoDiff = computeDiff(workingLoPOMappings, initialLoPOMappings)
 
-          try {
-            await aloPartialUpdateMutation.mutateAsync({
-              id: weightModal.mappingId,
-              data: { weight },
-            })
-            await queryClient.invalidateQueries({ queryKey: ['/api/evaluation/assessment-lo-mappings/'] })
-          } catch (error) {
-            setAssessmentLOMappings(previousMappings)
-            throw error
-          }
-        } else {
-          const response = await lopoPartialUpdateMutation.mutateAsync({
-            id: weightModal.mappingId,
-            data: { weight },
-          })
-          setLoPOMappings(loPOMappings.map((m) =>
-            m.id === weightModal.mappingId ? { ...m, weight: response.weight } : m
-          ))
-          setWeightModal(null)
-          await queryClient.invalidateQueries({ queryKey: ['/api/core/lo-po-mappings/'] })
-        }
-      } else {
-        if (weightModal.type === 'assessment-lo') {
-          const tempId = -Date.now()
-          const tempMapping = {
-            id: tempId,
-            assessment: weightModal.fromId,
-            learning_outcome: { id: weightModal.toId } as EvaluationLearningOutcome,
-            learning_outcome_id: weightModal.toId,
-            weight,
-          } as AssessmentLearningOutcomeMapping
-          setAssessmentLOMappings([...assessmentLOMappings, tempMapping])
-          setWeightModal(null)
+      const aloResult: any = await aloBulkSyncMutation.mutateAsync({
+        data: {
+          course_id: courseId,
+          creates: aloDiff.creates.map(m => ({
+            temp_id: m.id,
+            assessment_id: (m as any).assessment_id ?? (m as any).assessment,
+            learning_outcome_id: (m as any).learning_outcome_id ?? (m as any).learning_outcome?.id,
+            weight: m.weight,
+          })),
+          updates: aloDiff.updates,
+          deletes: aloDiff.deletes,
+        } as any,
+      })
 
-          try {
-            const response = await aloCreateMutation.mutateAsync({
-              data: {
-                assessment_id: weightModal.fromId,
-                learning_outcome_id: weightModal.toId,
-                weight,
-              },
-            })
-            setAssessmentLOMappings(prev =>
-              prev.map(m => m.id === tempId ? response : m)
-            )
-            await queryClient.invalidateQueries({ queryKey: ['/api/evaluation/assessment-lo-mappings/'] })
-          } catch (error) {
-            setAssessmentLOMappings(prev => prev.filter(m => m.id !== tempId))
-            throw error
-          }
-        } else {
-          const response = await lopoCreateMutation.mutateAsync({
-            data: {
-              course: courseId,
-              learning_outcome_id: weightModal.fromId,
-              program_outcome_id: weightModal.toId,
-              weight,
-            },
-          })
-          setLoPOMappings([...loPOMappings, response])
-          setWeightModal(null)
-          await queryClient.invalidateQueries({ queryKey: ['/api/core/lo-po-mappings/'] })
-        }
+      const lopoResult: any = await lopoBulkSyncMutation.mutateAsync({
+        data: {
+          course_id: courseId,
+          creates: lopoDiff.creates.map(m => ({
+            temp_id: m.id,
+            learning_outcome_id: (m as any).learning_outcome_id ?? (m as any).learning_outcome?.id,
+            program_outcome_id: (m as any).program_outcome_id ?? (m as any).program_outcome?.id,
+            weight: m.weight,
+          })),
+          updates: lopoDiff.updates,
+          deletes: lopoDiff.deletes,
+        } as any,
+      })
+
+      // Replace temp IDs with real IDs
+      const tempIdMap = new Map<number, number>()
+      for (const item of aloResult.created || []) {
+        if (item.temp_id) tempIdMap.set(item.temp_id, item.id)
+      }
+      for (const item of lopoResult.created || []) {
+        if (item.temp_id) tempIdMap.set(item.temp_id, item.id)
+      }
+
+      const updatedALO = workingAssessmentLOMappings.map(m =>
+        tempIdMap.has(m.id) ? { ...m, id: tempIdMap.get(m.id)! } : m
+      )
+      const updatedLOPO = workingLoPOMappings.map(m =>
+        tempIdMap.has(m.id) ? { ...m, id: tempIdMap.get(m.id)! } : m
+      )
+
+      setWorkingAssessmentLOMappings(updatedALO)
+      setWorkingLoPOMappings(updatedLOPO)
+      setInitialAssessmentLOMappings(clone(updatedALO))
+      setInitialLoPOMappings(clone(updatedLOPO))
+
+      // Invalidate mapping list queries to prevent stale data when the modal reopens.
+      // The global QueryClient has a 5-minute staleTime, so without invalidation
+      // the cached data would remain "fresh" and React Query would not refetch
+      // when this component remounts after the modal is closed and reopened.
+      queryClient.invalidateQueries({
+        queryKey: getEvaluationAssessmentLoMappingsListQueryKey(),
+      })
+      queryClient.invalidateQueries({
+        queryKey: getCoreLoPoMappingsListQueryKey(),
+      })
+
+      const allJobIds = [
+        ...(aloResult?.recompute_job_ids || []),
+        ...(lopoResult?.recompute_job_ids || []),
+      ].map((id: any) => ({ id, status: 'pending' as const }))
+      if (allJobIds.length > 0) {
+        enqueueJobs(allJobIds)
+      }
+
+      if (closeAfterSave) {
+        onClose?.()
       }
     } catch (error) {
-      console.error('Error creating/updating mapping:', error)
-
-      const errorMsg = getErrorMessage(error, 'Failed to save mapping')
-      alert(errorMsg)
+      console.error('Bulk sync failed:', error)
+      alert('Failed to save changes. Please try again.')
+    } finally {
+      setIsSaving(false)
     }
   }
 
-  const handleDeleteALOMapping = async (mappingId: number) => {
-    const previousMappings = assessmentLOMappings
-    setAssessmentLOMappings(assessmentLOMappings.filter((m) => m.id !== mappingId))
+  const handleCreateOrUpdateMapping = (weight: number) => {
+    if (!weightModal) return
 
-    try {
-      await aloDestroyMutation.mutateAsync({ id: mappingId })
-      await queryClient.invalidateQueries({ queryKey: ['/api/evaluation/assessment-lo-mappings/'] })
-    } catch (error) {
-      console.error('Error deleting mapping:', error)
-      setAssessmentLOMappings(previousMappings)
-      alert('Failed to delete mapping. Please try again.')
+    if (weightModal.editMode && weightModal.mappingId) {
+      // Update existing mapping in working state (no API call)
+      if (weightModal.type === 'assessment-lo') {
+        setWorkingAssessmentLOMappings(prev =>
+          prev.map(m => m.id === weightModal.mappingId ? { ...m, weight } : m)
+        )
+      } else {
+        setWorkingLoPOMappings(prev =>
+          prev.map(m => m.id === weightModal.mappingId ? { ...m, weight } : m)
+        )
+      }
+    } else {
+      // Create new mapping in working state with temp negative ID
+      const tempId = -Date.now()
+      if (weightModal.type === 'assessment-lo') {
+        const newMapping: any = {
+          id: tempId,
+          assessment: weightModal.fromId,
+          learning_outcome: { id: weightModal.toId },
+          learning_outcome_id: weightModal.toId,
+          weight,
+        }
+        setWorkingAssessmentLOMappings(prev => [...prev, newMapping])
+      } else {
+        const newMapping: any = {
+          id: tempId,
+          course: courseId,
+          learning_outcome: { id: weightModal.fromId },
+          program_outcome: { id: weightModal.toId },
+          weight,
+        }
+        setWorkingLoPOMappings(prev => [...prev, newMapping])
+      }
+    }
+    setWeightModal(null)
+  }
+
+  const handleDeleteMapping = (mappingId: number, type: 'assessment-lo' | 'lo-po') => {
+    if (type === 'assessment-lo') {
+      setWorkingAssessmentLOMappings(prev => prev.filter(m => m.id !== mappingId))
+    } else {
+      setWorkingLoPOMappings(prev => prev.filter(m => m.id !== mappingId))
     }
   }
 
-  const handleDeleteLOPOMapping = async (mappingId: number) => {
-    try {
-      await lopoDestroyMutation.mutateAsync({ id: mappingId })
-      setLoPOMappings(loPOMappings.filter((m) => m.id !== mappingId))
-      await queryClient.invalidateQueries({ queryKey: ['/api/core/lo-po-mappings/'] })
-    } catch (error) {
-      console.error('Error deleting mapping:', error)
-    }
+  const handleReset = () => {
+    setWorkingAssessmentLOMappings(clone(initialAssessmentLOMappings))
+    setWorkingLoPOMappings(clone(initialLoPOMappings))
   }
 
   // Get mappings for a specific LO
   const getAssessmentMappingsForLO = (loId: number) => {
-    return assessmentLOMappings.filter((m) => m.learning_outcome?.id === loId)
+    return workingAssessmentLOMappings.filter((m) => m.learning_outcome?.id === loId)
   }
 
   const getPOMappingsForLO = (loId: number) => {
-    return loPOMappings.filter((m) => m.learning_outcome?.id === loId)
+    return workingLoPOMappings.filter((m) => m.learning_outcome?.id === loId)
   }
 
   // Get LO mappings for a specific PO
   const getLOMappingsForPO = (poId: number) => {
-    return loPOMappings.filter((m) => m.program_outcome?.id === poId)
+    return workingLoPOMappings.filter((m) => m.program_outcome?.id === poId)
+  }
+
+  const queueWeightSuggestion = async () => {
+    setIsSuggesting(true)
+    setSuggestionError(null)
+    try {
+      const job = await createSuggestionMutation.mutateAsync({
+        data: { course_id: courseId } as any,
+      })
+
+      let attempts = 0
+      const maxAttempts = 60
+      while (attempts < maxAttempts) {
+        await new Promise(resolve => setTimeout(resolve, 1000))
+        const updated = await v1CoreWeightSuggestionRetrieve(job.id)
+        if (updated.status === 'success') {
+          const result = updated.result as WeightSuggestionJobResult
+          if (result && typeof result === 'object' && 'assessment_lo' in result) {
+            const assessmentLo = (result as any).assessment_lo as Record<string, Record<string, number>>
+            setWorkingAssessmentLOMappings(prev => {
+              const existingByKey = new Map<string, AssessmentLearningOutcomeMapping>()
+              for (const m of prev) {
+                const aId = typeof m.assessment === 'number' ? m.assessment : (m as any).assessment_id
+                const loId = m.learning_outcome?.id
+                if (aId !== undefined && loId !== undefined) {
+                  existingByKey.set(`${aId}-${loId}`, m)
+                }
+              }
+
+              const next: AssessmentLearningOutcomeMapping[] = []
+
+              for (const m of prev) {
+                const assessmentId = typeof m.assessment === 'number' ? m.assessment : (m as any).assessment_id
+                const assessmentName = assessments.find(a => a.id === assessmentId)?.name
+                const loId = m.learning_outcome?.id
+                const loCode = learningOutcomes.find(lo => lo.id === loId)?.code
+                if (assessmentName && loCode && assessmentLo[assessmentName]?.[loCode] !== undefined) {
+                  next.push({ ...m, weight: assessmentLo[assessmentName][loCode] })
+                } else {
+                  next.push(m)
+                }
+              }
+
+              for (const [assessmentName, loWeights] of Object.entries(assessmentLo)) {
+                const assessment = assessments.find(a => a.name === assessmentName)
+                if (!assessment) continue
+                for (const [loCode, weight] of Object.entries(loWeights)) {
+                  const lo = learningOutcomes.find(l => l.code === loCode)
+                  if (!lo) continue
+                  const key = `${assessment.id}-${lo.id}`
+                  if (!existingByKey.has(key)) {
+                    const tempId = -Date.now()
+                    next.push({
+                      id: tempId,
+                      assessment: assessment.id,
+                      assessment_id: assessment.id,
+                      learning_outcome: { id: lo.id },
+                      learning_outcome_id: lo.id,
+                      weight,
+                    } as AssessmentLearningOutcomeMapping)
+                  }
+                }
+              }
+
+              return next
+            })
+          }
+
+          const loPo = (result as any).lo_po as Record<string, Record<string, number>> | undefined
+          if (loPo) {
+            setWorkingLoPOMappings(prev => {
+              const existingByKey = new Map<string, LearningOutcomeProgramOutcomeMapping>()
+              for (const m of prev) {
+                const loId = m.learning_outcome?.id
+                const poId = m.program_outcome?.id
+                if (loId !== undefined && poId !== undefined) {
+                  existingByKey.set(`${loId}-${poId}`, m)
+                }
+              }
+
+              const next: LearningOutcomeProgramOutcomeMapping[] = []
+
+              for (const m of prev) {
+                const loId = m.learning_outcome?.id
+                const loCode = learningOutcomes.find(lo => lo.id === loId)?.code
+                const poId = m.program_outcome?.id
+                const poCode = programOutcomes.find(po => po.id === poId)?.code
+                if (loCode && poCode && loPo?.[loCode]?.[poCode] !== undefined) {
+                  next.push({ ...m, weight: loPo[loCode][poCode] })
+                } else {
+                  next.push(m)
+                }
+              }
+
+              for (const [loCode, poWeights] of Object.entries(loPo)) {
+                const lo = learningOutcomes.find(l => l.code === loCode)
+                if (!lo) continue
+                for (const [poCode, weight] of Object.entries(poWeights)) {
+                  const po = programOutcomes.find(p => p.code === poCode)
+                  if (!po) continue
+                  const key = `${lo.id}-${po.id}`
+                  if (!existingByKey.has(key)) {
+                    next.push({
+                      id: -Date.now(),
+                      course: courseId,
+                      learning_outcome: { id: lo.id },
+                      learning_outcome_id: lo.id,
+                      program_outcome: { id: po.id },
+                      program_outcome_id: po.id,
+                      weight,
+                    } as LearningOutcomeProgramOutcomeMapping)
+                  }
+                }
+              }
+
+              return next
+            })
+          }
+          break
+        } else if (updated.status === 'failed') {
+          setSuggestionError('Weight suggestion failed. Please try again.')
+          break
+        }
+        attempts++
+      }
+      if (attempts >= maxAttempts) {
+        setSuggestionError('Weight suggestion timed out. Please try again.')
+      }
+    } catch (err) {
+      setSuggestionError('Failed to get weight suggestions. Please try again.')
+      console.error('Weight suggestion error:', err)
+    } finally {
+      setIsSuggesting(false)
+    }
+  }
+
+  const handleSuggestWeights = async () => {
+    const needsDescriptions = assessments.some(a => !a.description?.trim())
+    if (needsDescriptions) {
+      setShowDescriptionsModal(true)
+    } else {
+      await queueWeightSuggestion()
+    }
+  }
+
+  const handleDescriptionsSubmit = async () => {
+    setShowDescriptionsModal(false)
+    await queueWeightSuggestion()
   }
 
   if (isLoading) {
@@ -646,7 +800,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
       onDragStart={handleDragStart}
       onDragEnd={handleDragEnd}
     >
-      <div className="space-y-6">
+      <div className="flex h-full flex-col gap-6" data-has-changes={String(hasChanges)}>
         {/* Header */}
         <div className="flex items-center justify-between">
           <div>
@@ -668,21 +822,47 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
               </div>
             </div>
           </div>
-          {onClose && (
+           <div className="flex items-center gap-2">
             <button
-              onClick={onClose}
-              className="p-2 hover:bg-gray-100 rounded-lg"
-              aria-label="Close"
+              onClick={handleSuggestWeights}
+              disabled={isSuggesting || assessments.length === 0}
+              className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-indigo-600 hover:bg-indigo-50 rounded-lg transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+              title="AI Weight Suggestion"
             >
-              <XMarkIcon className="h-6 w-6 text-gray-500" />
+              {isSuggesting ? (
+                <div className="h-4 w-4 border-2 border-indigo-400 border-t-transparent rounded-full animate-spin" />
+              ) : (
+                <svg className="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" strokeWidth={2}>
+                  <path strokeLinecap="round" strokeLinejoin="round" d="M13 10V3L4 14h7v7l9-11h-7z" />
+                </svg>
+              )}
+              <span>{isSuggesting ? 'Suggesting...' : 'Suggest Weights'}</span>
             </button>
-          )}
+            {suggestionError && (
+              <p className="text-xs text-red-600 mt-1">{suggestionError}</p>
+            )}
+            {onClose && (
+              <button
+                onClick={() => {
+                  if (hasChanges) {
+                    setShowCloseConfirm(true)
+                  } else {
+                    onClose()
+                  }
+                }}
+                className="p-2 hover:bg-gray-100 rounded-lg"
+                aria-label="Close"
+              >
+                <XMarkIcon className="h-6 w-6 text-gray-500" />
+              </button>
+            )}
+          </div>
         </div>
 
         {/* Three Column Layout */}
-        <div className="grid grid-cols-3 gap-6" style={{ height: 'calc(95vh - 100px)', minHeight: '600px' }}>
+        <div className="grid grid-cols-3 gap-6 flex-1 min-h-0">
           {/* Assessments Column */}
-          <Card className="p-4 flex flex-col overflow-hidden">
+          <Card className="p-4 flex flex-col overflow-hidden min-h-0">
             <div className="flex items-center justify-between mb-4 flex-shrink-0">
               <div className="flex items-center gap-2">
                 <ClipboardDocumentListIcon className="h-5 w-5 text-primary-600" />
@@ -690,7 +870,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
               </div>
               {(() => {
                 const unmappedCount = assessments.filter(a =>
-                  !assessmentLOMappings.some(m => m.assessment === a.id)
+                  !workingAssessmentLOMappings.some(m => m.assessment === a.id)
                 ).length
                 if (unmappedCount > 0) {
                   return (
@@ -704,10 +884,10 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
             </div>
             <div className="space-y-2 overflow-y-auto flex-1 pr-2">
               {assessments.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-4">No assessments found</p>
+                <p className="text-sm text-gray-500 text-center py-4">No assessments are defined for this course</p>
               ) : (
                 assessments.map((assessment) => {
-                  const isMapped = assessmentLOMappings.some(m => m.assessment === assessment.id)
+                  const isMapped = workingAssessmentLOMappings.some(m => m.assessment === assessment.id)
                   return (
                   <DraggableItem
                     key={assessment.id}
@@ -743,7 +923,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           </Card>
 
           {/* Learning Outcomes Column */}
-          <Card className="p-4 flex flex-col overflow-hidden">
+          <Card className="p-4 flex flex-col overflow-hidden min-h-0">
             <div className="flex items-center justify-between mb-4 flex-shrink-0">
               <div className="flex items-center gap-2">
                 <AcademicCapIcon className="h-5 w-5 text-teal-600" />
@@ -767,7 +947,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
             </div>
             <div className="space-y-3 overflow-y-auto flex-1 pr-2">
               {learningOutcomes.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-4">No learning outcomes found</p>
+                <p className="text-sm text-gray-500 text-center py-4">No learning outcomes are defined for this course</p>
               ) : (
                 learningOutcomes.map((lo) => (
                   <DroppableZone
@@ -786,19 +966,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                           <span className="px-2 py-1 bg-teal-100 text-teal-800 rounded text-sm font-bold">
                             {lo.code}
                           </span>
-                          {(() => {
-                            const totalWeight = getAssessmentMappingsForLO(lo.id).reduce((sum, m) => sum + m.weight, 0)
-                            const percentage = Math.round(totalWeight * 100)
-                            return (
-                              <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                                percentage >= 100 ? 'bg-green-100 text-green-700' :
-                                percentage > 0 ? 'bg-amber-100 text-amber-700' :
-                                'bg-gray-100 text-gray-500'
-                              }`}>
-                                {percentage}%/100%
-                              </span>
-                            )
-                          })()}
+
                         </div>
                         <p className="text-xs text-teal-700 line-clamp-2">{lo.description}</p>
 
@@ -811,9 +979,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                 const assessment = assessments.find(
                                   (a) => a.id === mapping.assessment
                                 )
-                                const usedWeight = assessmentLOMappings
-                                  .filter((m) => m.learning_outcome?.id === lo.id)
-                                  .reduce((sum, m) => sum + (m.weight || 0), 0)
                                 return (
                                   <span
                                     key={mapping.id}
@@ -827,7 +992,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                         toId: lo.id,
                                         fromLabel: assessment?.name || '',
                                         toLabel: lo.code,
-                                        usedWeight,
                                         editMode: true,
                                         mappingId: mapping.id,
                                         initialWeight: mapping.weight,
@@ -837,12 +1001,12 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                   >
                                     {assessment?.name?.substring(0, 15)}
                                     <span className="text-blue-500">
-                                      ({(mapping.weight * 100).toFixed(0)}%)
+                                      ({mapping.weight})
                                     </span>
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        handleDeleteALOMapping(mapping.id)
+                                        handleDeleteMapping(mapping.id, 'assessment-lo')
                                       }}
                                       className="p-0.5 hover:text-red-600 -mr-1"
                                       title="Remove mapping"
@@ -865,9 +1029,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                               {getPOMappingsForLO(lo.id).map((mapping) => {
                                 const poId = mapping.program_outcome?.id
                                 const po = programOutcomes.find((p) => p.id === poId)
-                                const usedWeight = loPOMappings
-                                  .filter((m) => m.program_outcome?.id === poId)
-                                  .reduce((sum, m) => sum + m.weight, 0)
                                 if (!poId) {
                                   return null
                                 }
@@ -884,7 +1045,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                         toId: poId,
                                         fromLabel: lo.code,
                                         toLabel: po?.code || '',
-                                        usedWeight,
                                         editMode: true,
                                         mappingId: mapping.id,
                                         initialWeight: mapping.weight,
@@ -894,12 +1054,12 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                   >
                                     {po?.code}
                                     <span className="text-purple-500">
-                                      ({(mapping.weight * 100).toFixed(0)}%)
+                                      ({mapping.weight})
                                     </span>
                                     <button
                                       onClick={(e) => {
                                         e.stopPropagation()
-                                        handleDeleteLOPOMapping(mapping.id)
+                                        handleDeleteMapping(mapping.id, 'lo-po')
                                       }}
                                       className="p-0.5 hover:text-red-600 -mr-1"
                                       title="Remove mapping"
@@ -922,7 +1082,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           </Card>
 
           {/* Program Outcomes Column */}
-          <Card className="p-4 flex flex-col overflow-hidden">
+          <Card className="p-4 flex flex-col overflow-hidden min-h-0">
             <div className="flex items-center justify-between mb-4 flex-shrink-0">
               <div className="flex items-center gap-2">
                 <ChartBarIcon className="h-5 w-5 text-purple-600" />
@@ -946,7 +1106,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
             </div>
             <div className="space-y-2 overflow-y-auto flex-1 pr-2">
               {programOutcomes.length === 0 ? (
-                <p className="text-sm text-gray-500 text-center py-4">No program outcomes found</p>
+                <p className="text-sm text-gray-500 text-center py-4">No program outcomes are defined for this course</p>
               ) : (
                 programOutcomes.map((po) => (
                   <DroppableZone
@@ -960,19 +1120,7 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                         <span className="px-2 py-1 bg-purple-100 text-purple-800 rounded text-sm font-bold">
                           {po.code}
                         </span>
-                        {(() => {
-                          const totalWeight = getLOMappingsForPO(po.id).reduce((sum, m) => sum + m.weight, 0)
-                          const percentage = Math.round(totalWeight * 100)
-                          return (
-                            <span className={`text-xs font-bold px-2 py-0.5 rounded ${
-                              percentage >= 100 ? 'bg-green-100 text-green-700' :
-                              percentage > 0 ? 'bg-amber-100 text-amber-700' :
-                              'bg-gray-100 text-gray-500'
-                            }`}>
-                              {percentage}%/100%
-                            </span>
-                          )
-                        })()}
+
                       </div>
                       <p className="text-xs text-purple-700 mt-2 line-clamp-2">{po.description}</p>
 
@@ -984,9 +1132,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                             {getLOMappingsForPO(po.id).map((mapping) => {
                               const loId = mapping.learning_outcome?.id
                               const lo = learningOutcomes.find((l) => l.id === loId)
-                              const usedWeight = loPOMappings
-                                .filter((m) => m.program_outcome?.id === po.id)
-                                .reduce((sum, m) => sum + m.weight, 0)
                               if (!loId) {
                                 return null
                               }
@@ -1003,7 +1148,6 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                       toId: po.id,
                                       fromLabel: lo?.code || '',
                                       toLabel: po.code,
-                                      usedWeight,
                                       editMode: true,
                                       mappingId: mapping.id,
                                       initialWeight: mapping.weight,
@@ -1013,12 +1157,12 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
                                 >
                                   {lo?.code}
                                   <span className="text-teal-500">
-                                    ({(mapping.weight * 100).toFixed(0)}%)
+                                    ({mapping.weight})
                                   </span>
                                   <button
                                     onClick={(e) => {
                                       e.stopPropagation()
-                                      handleDeleteLOPOMapping(mapping.id)
+                                      handleDeleteMapping(mapping.id, 'lo-po')
                                     }}
                                     className="p-0.5 hover:text-red-600 -mr-1"
                                     title="Remove mapping"
@@ -1038,6 +1182,32 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
               )}
             </div>
           </Card>
+        </div>
+
+        {/* Footer */}
+        <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200 mt-6">
+          <button
+            onClick={handleReset}
+            disabled={!hasChanges}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              hasChanges
+                ? 'border border-gray-300 text-gray-700 hover:bg-gray-50'
+                : 'border border-gray-200 text-gray-300 cursor-not-allowed'
+            }`}
+          >
+            ↺ Reset Changes
+          </button>
+          <button
+            onClick={() => handleSave(false)}
+            disabled={!hasChanges || isSaving}
+            className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
+              hasChanges && !isSaving
+                ? 'bg-blue-600 text-white hover:bg-blue-700'
+                : 'bg-gray-200 text-gray-400 cursor-not-allowed'
+            }`}
+          >
+            {isSaving ? 'Saving...' : 'Save Changes'}
+          </button>
         </div>
       </div>
 
@@ -1065,11 +1235,54 @@ const MappingEditor = ({ courseId, onClose }: MappingEditorProps) => {
           }
           fromLabel={weightModal.fromLabel}
           toLabel={weightModal.toLabel}
-          usedWeight={weightModal.usedWeight}
           editMode={weightModal.editMode}
           initialWeight={weightModal.initialWeight}
         />
       )}
+      {/* Close Confirmation Dialog */}
+      {showCloseConfirm && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[10001]">
+          <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-xl">
+            <h3 className="text-lg font-semibold text-gray-900 mb-2">Unsaved Changes</h3>
+            <p className="text-sm text-gray-600 mb-6">
+              You have unsaved mapping changes. What would you like to do?
+            </p>
+            <div className="flex gap-2 justify-end">
+              <button
+                onClick={() => setShowCloseConfirm(false)}
+                className="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+              >
+                Keep Editing
+              </button>
+              <button
+                onClick={() => {
+                  handleReset()
+                  setShowCloseConfirm(false)
+                  onClose?.()
+                }}
+                className="px-3 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
+              >
+                Discard
+              </button>
+              <button
+                onClick={async () => {
+                  setShowCloseConfirm(false)
+                  await handleSave(true)
+                }}
+                className="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+              >
+                Save & Close
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+      <AssessmentDescriptionsModal
+        isOpen={showDescriptionsModal}
+        onClose={() => setShowDescriptionsModal(false)}
+        onSubmit={handleDescriptionsSubmit}
+        assessments={assessments}
+      />
     </DndContext>
   )
 }

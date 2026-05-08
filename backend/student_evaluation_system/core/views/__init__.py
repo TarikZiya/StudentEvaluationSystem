@@ -18,11 +18,6 @@ from .academic_structure import (
     ProgramViewSet,
     TermViewSet,
     StudentListView,
-    StudentDetailView,
-    CourseListView,
-    CourseDetailView,
-    ProgramOutcomeListView,
-    ProgramOutcomeDetailView,
 )
 
 # Course & Outcomes
@@ -57,6 +52,9 @@ from .file_import import (
 # Permissions
 from .permissions import InstructorPermissionViewSet
 
+# Weight Suggestion
+from .weight_suggestion import WeightSuggestionViewSet
+
 # Analytics
 from .analytics import ProgramStatsView
 
@@ -68,11 +66,6 @@ __all__ = [
     "ProgramViewSet",
     "TermViewSet",
     "StudentListView",
-    "StudentDetailView",
-    "CourseListView",
-    "CourseDetailView",
-    "ProgramOutcomeListView",
-    "ProgramOutcomeDetailView",
     # Course & Outcomes
     "CourseViewSet",
     "ProgramOutcomeViewSet",
@@ -92,6 +85,8 @@ __all__ = [
     "FileUploadRateThrottle",
     # Permissions
     "InstructorPermissionViewSet",
+    # Weight Suggestion
+    "WeightSuggestionViewSet",
     # Analytics
     "ProgramStatsView",
 ]

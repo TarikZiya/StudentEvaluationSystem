@@ -7,6 +7,15 @@ import { coreLearningOutcomesList } from '../../../shared/api/generated/outcomes
 import FileUploadModal from '../components/FileUploadModal'
 import MappingEditor from '../components/MappingEditor'
 import { coreStudentLoScoresList } from '../../../shared/api/generated/scores/scores'
+import { evaluationGradesList } from '../../../shared/api/generated/evaluation/evaluation'
+import { Card } from '../../../shared/components/ui/Card'
+import { ChartWidget } from '../../../shared/components/ui/ChartWidget'
+import {
+  BookOpenIcon,
+  UsersIcon,
+  AcademicCapIcon,
+  ChartBarIcon,
+} from '@heroicons/react/24/outline'
 import type {
   Course,
   CourseInstructorsItem,
@@ -28,6 +37,11 @@ interface HeatmapData {
   studentName: string
   studentId: number
   loScores: Record<string, number>
+}
+
+interface AssessmentHeatmapData {
+  assessments: { id: number; name: string; totalScore: number }[]
+  students: { name: string; scores: Record<number, number> }[]
 }
 
 interface CourseDetailQueryData {
@@ -56,11 +70,11 @@ const getInstructorName = (instructor: CourseInstructorsItem): string => {
 }
 
 const CourseDetail = () => {
-const { id: courseId } = useParams<{ id: string }>()
-const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false)
-const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
+  const { id: courseId } = useParams<{ id: string }>()
+  const [isFileUploadModalOpen, setIsFileUploadModalOpen] = useState(false)
+  const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
+  const [loChartView, setLoChartView] = useState<'radar' | 'boxplot'>('radar')
 
-  // Prevent body scroll when mapping editor is open
   useEffect(() => {
     if (isMappingEditorOpen) {
       document.body.style.overflow = 'hidden'
@@ -88,7 +102,6 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
   })
 
   const handleUploadComplete = () => {
-    // Immediate refresh for uploaded grades.
     refetch()
   }
 
@@ -115,7 +128,6 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
     return Math.round((total / loScoresFiltered.length) * 100) / 100
   }
 
-  // Calculate box plot data for each LO
   const boxPlotData = useMemo((): BoxPlotData[] => {
     if (!data?.learningOutcomes || !data?.loScores) return []
 
@@ -142,7 +154,6 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
       const max = loScoresFiltered[n - 1]
       const mean = loScoresFiltered.reduce((sum, val) => sum + val, 0) / n
 
-      // Calculate quartiles
       const getQuantile = (arr: number[], q: number): number => {
         const pos = (arr.length - 1) * q
         const base = Math.floor(pos)
@@ -169,13 +180,11 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
     })
   }, [data?.learningOutcomes, data?.loScores])
 
-  // Calculate heatmap data (students x LOs)
   const heatmapData = useMemo((): { loCodes: string[]; students: HeatmapData[] } => {
     if (!data?.learningOutcomes || !data?.loScores) return { loCodes: [], students: [] }
 
     const loCodes = data.learningOutcomes.map((lo) => lo.code)
 
-    // Group scores by student
     const studentMap = new Map<number, HeatmapData>()
 
     data.loScores.forEach((score) => {
@@ -219,7 +228,6 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
       }
     })
 
-    // Fill missing scores with 0 for all LOs
     const students = Array.from(studentMap.values()).map(student => ({
       ...student,
       loScores: loCodes.reduce((acc, code) => ({
@@ -228,61 +236,102 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
       }), {} as Record<string, number>)
     }))
 
-    // Sort by student name
     students.sort((a, b) => a.studentName.localeCompare(b.studentName))
 
     return { loCodes, students }
   }, [data?.learningOutcomes, data?.loScores])
 
-  // Get color for heatmap cell - using a modern gradient from red to green
+  const { data: gradesData } = useQuery({
+    queryKey: ['grades', courseId],
+    queryFn: async () => {
+      if (!courseId) return { results: [] }
+      const resp = await evaluationGradesList({ course: Number(courseId) })
+      return resp
+    },
+    enabled: !!courseId
+  })
+
+  const assessmentHeatmap = useMemo((): AssessmentHeatmapData => {
+    const results = gradesData?.results || []
+    if (results.length === 0) return { assessments: [], students: [] }
+
+    const assessmentMap = new Map<number, { id: number; name: string; totalScore: number }>()
+    const studentMap = new Map<string, { name: string; scores: Record<number, number> }>()
+
+    for (const grade of results) {
+      const aId = grade.assessment.id
+      if (!assessmentMap.has(aId)) {
+        assessmentMap.set(aId, {
+          id: aId,
+          name: grade.assessment.name,
+          totalScore: grade.assessment.total_score ?? 100
+        })
+      }
+      const studentName = grade.student.replace(/ \([^)]+\)$/, '')
+      if (!studentMap.has(studentName)) {
+        studentMap.set(studentName, { name: studentName, scores: {} })
+      }
+      const total = assessmentMap.get(aId)!.totalScore
+      const pct = total > 0 ? Math.round((grade.score / total) * 1000) / 10 : 0
+      studentMap.get(studentName)!.scores[aId] = pct
+    }
+
+    const assessments = Array.from(assessmentMap.values()).sort((a, b) => a.id - b.id)
+    const students = Array.from(studentMap.values()).sort((a, b) => a.name.localeCompare(b.name))
+
+    for (const student of students) {
+      for (const a of assessments) {
+        if (!(a.id in student.scores)) {
+          student.scores[a.id] = 0
+        }
+      }
+    }
+
+    return { assessments, students }
+  }, [gradesData])
+
   const getHeatmapColor = (score: number): string => {
-    if (score === 0) return 'rgb(249, 250, 251)' // gray-50
+    if (score === 0) return 'rgb(249, 250, 251)'
 
     const normalized = Math.max(0, Math.min(100, score)) / 100
 
-    // Modern gradient: Red (0) → Coral (25) → Gold (50) → Lime (75) → Emerald (100)
     if (normalized < 0.25) {
-      // Red to coral
       const t = normalized / 0.25
-      const r = 239 - Math.round(11 * t)  // 239 → 228 (red-500 to coral)
-      const g = 68 + Math.round(46 * t)   // 68 → 114
-      const b = 68 + Math.round(14 * t)   // 68 → 82
+      const r = 239 - Math.round(11 * t)
+      const g = 68 + Math.round(46 * t)
+      const b = 68 + Math.round(14 * t)
       return `rgb(${r}, ${g}, ${b})`
     } else if (normalized < 0.5) {
-      // Coral to gold
       const t = (normalized - 0.25) / 0.25
-      const r = 228 + Math.round(24 * t)  // 228 → 252
-      const g = 114 + Math.round(97 * t)  // 114 → 211
-      const b = 82 - Math.round(27 * t)   // 82 → 55
+      const r = 228 + Math.round(24 * t)
+      const g = 114 + Math.round(97 * t)
+      const b = 82 - Math.round(27 * t)
       return `rgb(${r}, ${g}, ${b})`
     } else if (normalized < 0.75) {
-      // Gold to lime
       const t = (normalized - 0.5) / 0.25
-      const r = 252 - Math.round(68 * t)  // 252 → 184 (gold to lime)
-      const g = 211 + Math.round(33 * t)  // 211 → 244
-      const b = 55 + Math.round(58 * t)   // 55 → 113
+      const r = 252 - Math.round(68 * t)
+      const g = 211 + Math.round(33 * t)
+      const b = 55 + Math.round(58 * t)
       return `rgb(${r}, ${g}, ${b})`
     } else {
-      // Lime to emerald
       const t = (normalized - 0.75) / 0.25
-      const r = 184 - Math.round(150 * t) // 184 → 34 (emerald-500)
-      const g = 244 - Math.round(42 * t)  // 244 → 202
-      const b = 113 + Math.round(19 * t)  // 113 → 132
+      const r = 184 - Math.round(150 * t)
+      const g = 244 - Math.round(42 * t)
+      const b = 113 + Math.round(19 * t)
       return `rgb(${r}, ${g}, ${b})`
     }
   }
 
-  // Get text color based on background
   const getTextColor = (score: number): string => {
-    if (score === 0) return 'rgb(107, 114, 128)' // gray-500
-    if (score >= 60) return 'rgb(17, 24, 39)' // gray-900
-    return 'rgb(255, 255, 255)' // white
+    if (score === 0) return 'rgb(107, 114, 128)'
+    if (score >= 60) return 'rgb(17, 24, 39)'
+    return 'rgb(255, 255, 255)'
   }
 
   if (isLoading) {
     return (
       <div className="flex items-center justify-center h-64">
-        <div className="text-lg text-gray-600">Loading course details...</div>
+        <div className="text-lg text-secondary-600">Loading course details...</div>
       </div>
     )
   }
@@ -303,253 +352,285 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
     )
   }
 
+  const avgScore = getAverageScore()
+  const scoreTextColor = avgScore >= 70 ? 'text-emerald-700' : avgScore >= 50 ? 'text-amber-700' : avgScore === 0 ? 'text-secondary-400' : 'text-red-700'
+
   return (
     <div className="space-y-6">
-      {/* Course Header */}
-      <div className="bg-white shadow rounded-lg p-6">
-        <div className="flex justify-between items-start mb-6">
-          <div>
-            <h1 className="text-2xl font-bold text-gray-900 mb-2">
-              {data.course.code} - {data.course.name}
-            </h1>
-            {/*<p className="text-gray-600">
-              {course.description || 'No description available'}
-            </p>*/}
+      <div className="flex items-center justify-between">
+        <div>
+          <h1 className="text-2xl font-bold text-secondary-900">
+            {data.course.code} - {data.course.name}
+          </h1>
+        </div>
+        <button
+          onClick={() => setIsFileUploadModalOpen(true)}
+          className="bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 flex items-center space-x-2 transition-colors"
+        >
+          <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+            <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+          </svg>
+          <span>Import File</span>
+        </button>
+      </div>
+
+      <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+        <Card variant="flat" className="bg-primary-50 border-primary-200">
+          <div className="flex items-center space-x-4">
+            <div className="p-3 bg-primary-100 rounded-xl">
+              <BookOpenIcon className="h-8 w-8 text-primary-700" />
+            </div>
+            <div>
+              <p className="text-sm text-secondary-600 font-medium">Credits</p>
+              <p className="text-3xl font-bold text-primary-700">{data.course.credits}</p>
+            </div>
           </div>
+        </Card>
+
+        <Card variant="flat" className="bg-cyan-50 border-cyan-200">
+          <div className="flex items-center space-x-4">
+            <div className="p-3 bg-cyan-100 rounded-xl">
+              <UsersIcon className="h-8 w-8 text-cyan-700" />
+            </div>
+            <div className="min-w-0">
+              <p className="text-sm text-secondary-600 font-medium">Instructors</p>
+              <p className="text-lg font-bold text-cyan-700 truncate">{getInstructorNames()}</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card variant="flat" className="bg-emerald-50 border-emerald-200">
+          <div className="flex items-center space-x-4">
+            <div className="p-3 bg-emerald-100 rounded-xl">
+              <AcademicCapIcon className="h-8 w-8 text-emerald-700" />
+            </div>
+            <div>
+              <p className="text-sm text-secondary-600 font-medium">Avg Score</p>
+              <p className={`text-3xl font-bold ${scoreTextColor}`}>{avgScore}%</p>
+            </div>
+          </div>
+        </Card>
+
+        <Card variant="flat" className="bg-violet-50 border-violet-200">
+          <div className="flex items-center space-x-4">
+            <div className="p-3 bg-violet-100 rounded-xl">
+              <ChartBarIcon className="h-8 w-8 text-violet-700" />
+            </div>
+            <div>
+              <p className="text-sm text-secondary-600 font-medium">Learning Outcomes</p>
+              <p className="text-3xl font-bold text-violet-700">{data.learningOutcomes?.length || 0}</p>
+            </div>
+          </div>
+        </Card>
+      </div>
+
+      <Card>
+        <div className="flex justify-between items-center mb-4">
+          <h2 className="text-xl font-bold text-secondary-900">Learning Outcomes</h2>
           <button
-            onClick={() => setIsFileUploadModalOpen(true)}
-            className="bg-blue-600 text-white px-4 py-2 rounded-md hover:bg-blue-700 flex items-center space-x-2"
+            onClick={() => setIsMappingEditorOpen(true)}
+            className="bg-primary-600 text-white px-3 py-1.5 rounded-lg hover:bg-primary-700 flex items-center space-x-1 text-sm transition-colors"
           >
-            <svg className="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M7 16a4 4 0 01-.88-7.903A5 5 0 1115.9 6L16 6a5 5 0 011 9.9M15 13l-3-3m0 0l-3 3m3-3v12" />
+            <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
             </svg>
-            <span>Import File</span>
+            <span>Outcome Mapping</span>
           </button>
         </div>
-
-        <div className="grid grid-cols-1 md:grid-cols-3 gap-6 mb-6">
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <h3 className="text-lg font-medium text-gray-900 mb-2">Course Stats</h3>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Credits:</span>
-                <span className="font-medium">{data.course.credits}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Instructors:</span>
-                <span className="font-medium text-sm">{getInstructorNames()}</span>
-              </div>
-              <div className="flex justify-between">
-                <span className="text-gray-600">Learning Outcomes:</span>
-                <span className="font-medium">{data.learningOutcomes?.length || 0}</span>
-              </div>
-              {data.course.term && (
-                <div className="flex justify-between">
-                  <span className="text-gray-600">Term:</span>
-                  <span className="font-medium">{data.course.term.name}</span>
-                </div>
-              )}
-            </div>
-          </div>
-
-          <div className="bg-gray-50 p-4 rounded-lg">
-            <h3 className="text-lg font-medium text-gray-900 mb-2">Performance</h3>
-            <div className="space-y-2">
-              <div className="flex justify-between">
-                <span className="text-gray-600">Average Score:</span>
-                <span className={`font-medium ${getAverageScore() >= 80 ? 'text-green-600' : getAverageScore() >= 60 ? 'text-yellow-600' : 'text-red-600'}`}>
-                  {getAverageScore()}%
-                </span>
-              </div>
-            </div>
-          </div>
-
-
+        <div className="flex items-center gap-2 mb-4">
+          <button
+            onClick={() => setLoChartView('radar')}
+            className={`px-3 py-1.5 text-sm rounded-lg transition ${
+              loChartView === 'radar'
+                ? 'bg-primary-600 text-white'
+                : 'bg-secondary-100 text-secondary-600 hover:bg-secondary-200'
+            }`}
+          >
+            Radar
+          </button>
+          <button
+            onClick={() => setLoChartView('boxplot')}
+            className={`px-3 py-1.5 text-sm rounded-lg transition ${
+              loChartView === 'boxplot'
+                ? 'bg-primary-600 text-white'
+                : 'bg-secondary-100 text-secondary-600 hover:bg-secondary-200'
+            }`}
+          >
+            Box Plot
+          </button>
         </div>
-      </div>
+        {data.learningOutcomes && data.learningOutcomes.length > 0 ? (
+          <>
+            {loChartView === 'radar' ? (
+              <ChartWidget
+                title=""
+                type="radar"
+                series={[{
+                  name: 'Average Score',
+                  data: data.learningOutcomes.map(lo => Math.round(getLOPerformance(lo.code) * 10) / 10)
+                }]}
+                options={{
+                  xaxis: {
+                    categories: data.learningOutcomes.map(lo => lo.code)
+                  },
+                  yaxis: {
+                    show: false,
+                    min: 0,
+                    max: 100
+                  },
+                  fill: {
+                    opacity: 0.3,
+                    colors: ['#6366f1']
+                  },
+                  stroke: {
+                    colors: ['#6366f1']
+                  },
+                  colors: ['#6366f1'],
+                  markers: {
+                    size: 4
+                  },
+                  dataLabels: {
+                    enabled: true,
+                    background: {
+                      enabled: true,
+                      borderRadius: 2,
+                    }
+                  },
+                  plotOptions: {
+                    radar: {
+                      polygons: {
+                        strokeColors: '#e5e7eb',
+                        connectorColors: '#e5e7eb',
+                      }
+                    }
+                  }
+                }}
+                height={320}
+                className="shadow-none border-0 p-0 [&>div]:p-0"
+              />
+            ) : (
+              <div className="space-y-6">
+                {boxPlotData.length > 0 ? (
+                  boxPlotData.map((box) => {
+                    const W = 500
+                    const PAD = 12
+                    const scale = W / 100
+                    const x = (v: number) => PAD + v * scale
 
-      {/* Learning Outcomes Details */}
-      <div className="grid grid-cols-1 lg:grid-cols-2 gap-6">
-        <div className="bg-white shadow rounded-lg p-6">
-          <div className="flex justify-between items-center mb-4">
-            <h2 className="text-xl font-bold text-gray-900">Learning Outcomes</h2>
-            <button
-              onClick={() => setIsMappingEditorOpen(true)}
-              className="bg-teal-600 text-white px-3 py-1.5 rounded-md hover:bg-teal-700 flex items-center space-x-1 text-sm"
-            >
-              <svg className="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
-                <path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M13.828 10.172a4 4 0 00-5.656 0l-4 4a4 4 0 105.656 5.656l1.102-1.101m-.758-4.899a4 4 0 005.656 0l4-4a4 4 0 00-5.656-5.656l-1.1 1.1" />
-              </svg>
-              <span>Outcome Mapping</span>
-            </button>
-          </div>
-          <div className="space-y-3">
-            {data.learningOutcomes?.map((lo) => (
-              <div key={lo.id} className="border-l-4 border-indigo-500 pl-4 py-2 bg-gray-50 rounded-r-lg">
-                <div className="flex justify-between items-start">
-                  <div className="flex-1">
-                    <div className="flex items-center gap-2">
-                      <h4 className="font-semibold text-gray-900">{lo.code}</h4>
-                      <span className={`text-sm font-bold px-2 py-0.5 rounded ${getLOPerformance(lo.code) >= 80 ? 'bg-emerald-100 text-emerald-700' : getLOPerformance(lo.code) >= 60 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'}`}>
-                        {getLOPerformance(lo.code)}%
-                      </span>
-                    </div>
-                    <p className="text-sm text-gray-600 mt-1">{lo.description}</p>
-                  </div>
-                </div>
-              </div>
-            ))}
-            {!data.learningOutcomes || data.learningOutcomes.length === 0 && (
-              <p className="text-gray-500 text-center py-4">No learning outcomes defined for this course</p>
-            )}
-          </div>
-        </div>
+                    const getBoxColor = (median: number) => {
+                      if (median >= 80) return { stroke: '#15803d', fill: '#bbf7d0', whisker: '#4ade80' }
+                      if (median >= 60) return { stroke: '#a16207', fill: '#fef08a', whisker: '#facc15' }
+                      return { stroke: '#b91c1c', fill: '#fecaca', whisker: '#f87171' }
+                    }
+                    const c = getBoxColor(box.median)
 
-        <div className="bg-white shadow rounded-lg p-6">
-          <h2 className="text-xl font-bold text-gray-900 mb-4">Performance Overview</h2>
-          <div className="space-y-4">
-            {boxPlotData.length > 0 ? (
-              boxPlotData.map((box) => {
-                const boxWidth = 300
-                const scale = boxWidth / 100
-                const xMin = box.min * scale
-                const xQ1 = box.q1 * scale
-                const xMedian = box.median * scale
-                const xQ3 = box.q3 * scale
-                const xMax = box.max * scale
-
-                // Get color based on median
-                const getBoxColor = (median: number) => {
-                  if (median >= 80) return { main: '#22c55e', bg: 'rgba(34, 197, 94, 0.15)' } // Emerald-500
-                  if (median >= 60) return { main: '#eab308', bg: 'rgba(234, 179, 8, 0.15)' } // Yellow-500
-                  return { main: '#ef4444', bg: 'rgba(239, 68, 68, 0.15)' } // Red-500
-                }
-                const boxColor = getBoxColor(box.median)
-
-                return (
-                  <div key={box.code} className="flex items-center space-x-4">
-                    <span className="text-sm font-semibold w-14 text-gray-700">{box.code}</span>
-                    <div className="flex-1 flex items-center h-10">
-                      <svg width={boxWidth + 40} height={45} className="overflow-visible">
-                        {/* Background gradient */}
-                        <defs>
-                          <linearGradient id="gradientScale" x1="0%" y1="0%" x2="100%" y2="0%">
-                            <stop offset="0%" stopColor="#ef4444" stopOpacity="0.12" />
-                            <stop offset="25%" stopColor="#f97316" stopOpacity="0.12" />
-                            <stop offset="50%" stopColor="#eab308" stopOpacity="0.12" />
-                            <stop offset="75%" stopColor="#84cc16" stopOpacity="0.12" />
-                            <stop offset="100%" stopColor="#22c55e" stopOpacity="0.12" />
-                          </linearGradient>
-                        </defs>
-                        <rect x="0" y={5} width={boxWidth} height={30} fill="url(#gradientScale)" rx={4} />
-
-                        {/* Scale line */}
-                        <line
-                          x1="0" y1={20} x2={boxWidth} y2={20}
-                          stroke="#e5e7eb" strokeWidth={1}
-                        />
-                        {/* Scale markers */}
-                        {[0, 25, 50, 75, 100].map((tick) => (
-                          <g key={tick}>
-                            <line
-                              x1={tick * scale} y1={14} x2={tick * scale} y2={26}
-                              stroke="#d1d5db" strokeWidth={1}
-                            />
-                            <text
-                              x={tick * scale} y={41}
-                              fontSize={9} textAnchor="middle" fill="#6b7280"
-                            >
+                    return (
+                      <div key={box.code}>
+                        <div className="flex items-center justify-between mb-1.5">
+                          <span className="text-sm font-semibold text-secondary-800">{box.code}</span>
+                          <div className="flex items-center gap-3 text-xs text-secondary-500 tabular-nums">
+                            <span>Min <span className="font-semibold text-secondary-700">{box.min}</span></span>
+                            <span>Q1 <span className="font-semibold text-secondary-700">{box.q1}</span></span>
+                            <span>Med <span className="font-semibold text-secondary-700">{box.median}</span></span>
+                            <span>Q3 <span className="font-semibold text-secondary-700">{box.q3}</span></span>
+                            <span>Max <span className="font-semibold text-secondary-700">{box.max}</span></span>
+                          </div>
+                        </div>
+                        <svg width="100%" viewBox={`0 0 ${W + PAD * 2} 44`} preserveAspectRatio="none" className="overflow-visible">
+                          <rect x={PAD} y={19} width={W} height={2} rx={1} fill="#f3f4f6" />
+                          <line x1={x(box.min)} y1={20} x2={x(box.q1)} y2={20} stroke="#9ca3af" strokeWidth={1.5} />
+                          <line x1={x(box.q3)} y1={20} x2={x(box.max)} y2={20} stroke="#9ca3af" strokeWidth={1.5} />
+                          <line x1={x(box.min)} y1={12} x2={x(box.min)} y2={28} stroke="#6b7280" strokeWidth={2} strokeLinecap="round" />
+                          <line x1={x(box.max)} y1={12} x2={x(box.max)} y2={28} stroke="#6b7280" strokeWidth={2} strokeLinecap="round" />
+                          <rect
+                            x={x(box.q1)} y={8} width={x(box.q3) - x(box.q1)} height={24}
+                            fill={c.fill}
+                            stroke={c.stroke}
+                            strokeWidth={2}
+                            rx={4}
+                          />
+                          <line
+                            x1={x(box.median)} y1={6} x2={x(box.median)} y2={34}
+                            stroke={c.stroke} strokeWidth={3} strokeLinecap="round"
+                          />
+                          <polygon
+                            points={`${x(box.mean)},${14} ${x(box.mean) + 5},${20} ${x(box.mean)},${26} ${x(box.mean) - 5},${20}`}
+                            fill="#4f46e5"
+                            stroke="#fff"
+                            strokeWidth={1.5}
+                          />
+                          {[0, 25, 50, 75, 100].map((tick) => (
+                            <text key={tick} x={x(tick)} y={42} fontSize={10} textAnchor="middle" fill="#9ca3af" fontFamily="ui-monospace, monospace">
                               {tick}
                             </text>
-                          </g>
-                        ))}
-                        {/* Whisker line */}
-                        <line
-                          x1={xMin} y1={20} x2={xMax} y2={20}
-                          stroke="#374151" strokeWidth={2}
-                        />
-                        {/* Whisker caps */}
-                        <line
-                          x1={xMin} y1={10} x2={xMin} y2={30}
-                          stroke="#374151" strokeWidth={2}
-                        />
-                        <line
-                          x1={xMax} y1={10} x2={xMax} y2={30}
-                          stroke="#374151" strokeWidth={2}
-                        />
-                        {/* Box (Q1 to Q3) */}
-                        <rect
-                          x={xQ1} y={6} width={xQ3 - xQ1} height={28}
-                          fill={boxColor.bg}
-                          stroke={boxColor.main}
-                          strokeWidth={2.5}
-                          rx={3}
-                        />
-                        {/* Median line */}
-                        <line
-                          x1={xMedian} y1={6} x2={xMedian} y2={34}
-                          stroke="#1f2937" strokeWidth={3}
-                        />
-                        {/* Mean diamond */}
-                        <polygon
-                          points={`${box.mean * scale},${20} ${box.mean * scale + 4},${14} ${box.mean * scale + 8},${20} ${box.mean * scale + 4},${26}`}
-                          fill="#4f46e5"
-                          stroke="#fff"
-                          strokeWidth={1}
-                        />
-                      </svg>
-                    </div>
-                    {/* Stats */}
-                    <div className="text-xs text-gray-600 flex space-x-2 min-w-[140px]">
-                      <span className="font-semibold text-gray-700">Med: {box.median}</span>
-                      <span>Q1: {box.q1}</span>
-                      <span>Q3: {box.q3}</span>
-                    </div>
-                  </div>
-                )
-              })
-            ) : (
-              <p className="text-gray-500 text-center py-4">No data available</p>
+                          ))}
+                        </svg>
+                      </div>
+                    )
+                  })
+                ) : (
+                  <p className="text-secondary-500 text-center py-4">No data available</p>
+                )}
+              </div>
             )}
-          </div>
-          {/* Legend */}
-          {boxPlotData.length > 0 && (
-            <div className="mt-4 pt-4 border-t border-gray-200">
-              <div className="flex items-center justify-center space-x-6 text-xs text-gray-600">
-                <div className="flex items-center space-x-1">
-                  <div className="w-4 h-3 border-2 border-indigo-500 bg-indigo-100 rounded"></div>
-                  <span>Box (Q1-Q3)</span>
-                </div>
-                <div className="flex items-center space-x-1">
-                  <div className="w-0.5 h-3 bg-gray-900"></div>
-                  <span>Median</span>
-                </div>
-                <div className="flex items-center space-x-1">
-                  <div className="w-2 h-2 bg-indigo-600 transform rotate-45"></div>
-                  <span>Mean</span>
+            {boxPlotData.length > 0 && loChartView === 'boxplot' && (
+              <div className="mt-5 pt-4 border-t border-secondary-100">
+                <div className="flex items-center justify-center gap-5 text-xs text-secondary-500">
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-5 h-3 rounded border-2 border-emerald-700 bg-emerald-200" />
+                    <span>IQR (Q1–Q3)</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-0.5 h-4 bg-secondary-800 rounded-full" />
+                    <span>Median</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-2.5 h-2.5 bg-indigo-600 rotate-45 rounded-[1px]" />
+                    <span>Mean</span>
+                  </div>
+                  <div className="flex items-center gap-1.5">
+                    <div className="w-0.5 h-3 bg-gray-400 rounded-full mx-1" />
+                    <span>Whiskers (Min–Max)</span>
+                  </div>
                 </div>
               </div>
+            )}
+            <div className="mt-6 grid grid-cols-1 md:grid-cols-2 gap-3">
+              {data.learningOutcomes.map((lo) => {
+                const score = getLOPerformance(lo.code)
+                return (
+                  <div key={lo.id} className="flex flex-col p-3 rounded-xl border border-secondary-200 bg-white shadow-sm">
+                    <div className="flex items-center justify-between mb-2">
+                      <span className="font-mono font-bold text-indigo-600 bg-indigo-50 px-2 py-0.5 rounded text-xs">{lo.code}</span>
+                      <span className={`font-bold px-2 py-0.5 rounded-full text-xs whitespace-nowrap ${
+                        score >= 80 ? 'bg-emerald-100 text-emerald-700' : score >= 60 ? 'bg-amber-100 text-amber-700' : 'bg-rose-100 text-rose-700'
+                      }`}>
+                        {score}%
+                      </span>
+                    </div>
+                    <span className="text-secondary-700 text-sm leading-snug">{lo.description}</span>
+                  </div>
+                )
+              })}
             </div>
-          )}
-        </div>
-      </div>
+          </>
+        ) : (
+          <p className="text-secondary-500 text-center py-4">No learning outcomes defined for this course</p>
+        )}
+      </Card>
 
-      {/* Student Performance Heatmap */}
-      <div className="bg-white shadow rounded-lg p-6">
-        <h2 className="text-xl font-bold text-gray-900 mb-4">Student Performance Heatmap</h2>
-        <p className="text-sm text-gray-600 mb-4">
-          Learning outcome scores for each student. Colors range from deep red (low) to bright green (high).
-        </p>
+      <Card>
+        <h2 className="text-xl font-bold text-secondary-900 mb-4">Student Performance Heatmap</h2>
         {heatmapData.students.length > 0 ? (
           <div className="overflow-x-auto">
-            <table className="w-full border-collapse">
+            <table className="w-full border-collapse text-sm">
               <thead>
-                <tr>
-                  <th className="sticky left-0 bg-gray-50 px-4 py-3 text-left text-sm font-semibold text-gray-700 border-b-2 border-r border-gray-300 z-10">
-                    Student Name
+                <tr className="bg-secondary-100">
+                  <th className="sticky left-0 bg-secondary-100 px-2 py-1.5 text-left text-xs font-semibold text-secondary-700 border-b border-r border-secondary-200 z-10 min-w-[120px] max-w-[180px]">
+                    Student
                   </th>
                   {heatmapData.loCodes.map((loCode) => (
-                    <th key={loCode} className="px-4 py-3 text-center text-sm font-semibold text-gray-700 border-b-2 border-gray-200 min-w-[80px]">
+                    <th key={loCode} className="px-2 py-1.5 text-center text-xs font-semibold text-secondary-700 border-b border-secondary-200 min-w-[60px]">
                       {loCode}
                     </th>
                   ))}
@@ -557,8 +638,8 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
               </thead>
               <tbody>
                 {heatmapData.students.map((student, idx) => (
-                  <tr key={student.studentId} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
-                    <td className="sticky left-0 px-4 py-2 text-sm font-medium text-gray-900 border-b border-r border-gray-200" style={{ backgroundColor: idx % 2 === 0 ? '#fff' : '#f9fafb' }}>
+                  <tr key={student.studentId} className={idx % 2 === 0 ? 'bg-white' : 'bg-secondary-50/50'}>
+                    <td className="sticky left-0 px-2 py-1.5 text-sm font-medium text-secondary-900 border-b border-r border-secondary-200 truncate min-w-[120px] max-w-[180px]" style={{ backgroundColor: idx % 2 === 0 ? '#fff' : '#f9fafbfa' }}>
                       {student.studentName}
                     </td>
                     {heatmapData.loCodes.map((loCode) => {
@@ -568,10 +649,10 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
                       return (
                         <td
                           key={loCode}
-                          className="px-2 py-2 text-center text-sm font-medium border-b border-gray-200"
+                          className="px-2 py-1.5 text-center font-mono text-xs font-medium border-b border-secondary-200"
                           style={{ backgroundColor: bgColor, color: textColor }}
                         >
-                          {score > 0 ? score.toFixed(1) : '-'}
+                          {score > 0 ? score.toFixed(1) : '−'}
                         </td>
                       )
                     })}
@@ -581,21 +662,77 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
             </table>
           </div>
         ) : (
-          <p className="text-gray-500 text-center py-8">No student performance data available</p>
+          <p className="text-secondary-500 text-center py-8">No student performance data available</p>
         )}
-        {/* Color Scale Legend */}
         {heatmapData.students.length > 0 && (
-          <div className="mt-6 flex items-center justify-center space-x-4">
-            <span className="text-xs font-medium text-gray-700">0%</span>
-            <div className="w-64 h-4 rounded shadow-sm" style={{
-              background: 'linear-gradient(to right, #ef4444 0%, #f97316 25%, #eab308 50%, #84cc16 75%, #22c55e 100%)'
-            }}></div>
-            <span className="text-xs font-medium text-gray-700">100%</span>
+          <div className="mt-4 flex items-center justify-center gap-1">
+            {[0, 25, 50, 75, 100].map((val) => (
+              <div key={val} className="flex items-center gap-1">
+                <div className="w-4 h-4 rounded" style={{ backgroundColor: getHeatmapColor(val) }} />
+                <span className="text-xs text-secondary-600 tabular-nums">{val}%</span>
+              </div>
+            ))}
           </div>
         )}
-      </div>
+      </Card>
 
-      {/* File Upload Modal */}
+      <Card>
+        <h2 className="text-xl font-bold text-secondary-900 mb-4">Assessment Scores</h2>
+        {assessmentHeatmap.students.length > 0 ? (
+          <div className="overflow-x-auto">
+            <table className="w-full border-collapse text-sm">
+              <thead>
+                <tr className="bg-secondary-100">
+                  <th className="sticky left-0 bg-secondary-100 px-2 py-1.5 text-left text-xs font-semibold text-secondary-700 border-b border-r border-secondary-200 z-10 min-w-[120px] max-w-[180px]">
+                    Student
+                  </th>
+                  {assessmentHeatmap.assessments.map((a) => (
+                    <th key={a.id} className="px-2 py-1.5 text-center text-xs font-semibold text-secondary-700 border-b border-secondary-200 min-w-[60px]">
+                      <div className="truncate max-w-[80px]" title={a.name}>{a.name}</div>
+                    </th>
+                  ))}
+                </tr>
+              </thead>
+              <tbody>
+                {assessmentHeatmap.students.map((student, idx) => (
+                  <tr key={idx} className={`hover:bg-secondary-100/50 ${idx % 2 === 0 ? 'bg-white' : 'bg-secondary-50/50'}`}>
+                    <td className="sticky left-0 px-2 py-1.5 text-sm font-medium text-secondary-900 border-b border-r border-secondary-200 truncate min-w-[120px] max-w-[180px]" style={{ backgroundColor: idx % 2 === 0 ? '#fff' : '#f9fafbfa' }}>
+                      {student.name}
+                    </td>
+                    {assessmentHeatmap.assessments.map((a) => {
+                      const pct = student.scores[a.id] ?? 0
+                      const bgColor = getHeatmapColor(pct)
+                      const textColor = getTextColor(pct)
+                      return (
+                        <td
+                          key={a.id}
+                          className="px-2 py-1.5 text-center font-mono text-xs font-medium border-b border-secondary-200"
+                          style={{ backgroundColor: bgColor, color: textColor }}
+                        >
+                          {pct > 0 ? pct.toFixed(1) : '−'}
+                        </td>
+                      )
+                    })}
+                  </tr>
+                ))}
+              </tbody>
+            </table>
+          </div>
+        ) : (
+          <p className="text-secondary-500 text-center py-8">No assessment data available</p>
+        )}
+        {assessmentHeatmap.students.length > 0 && (
+          <div className="mt-4 flex items-center justify-center gap-1">
+            {[0, 25, 50, 75, 100].map((val) => (
+              <div key={val} className="flex items-center gap-1">
+                <div className="w-4 h-4 rounded" style={{ backgroundColor: getHeatmapColor(val) }} />
+                <span className="text-xs text-secondary-600 tabular-nums">{val}%</span>
+              </div>
+            ))}
+          </div>
+        )}
+      </Card>
+
       <FileUploadModal
         course={data.course.name}
         courseCode={data.course.code}
@@ -606,7 +743,6 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
         onUploadComplete={handleUploadComplete}
       />
 
-      {/* Mapping Editor Modal */}
       {isMappingEditorOpen && createPortal(
         <div
           className="fixed bg-black bg-opacity-50 flex items-center justify-center p-4"
@@ -631,6 +767,7 @@ const [isMappingEditorOpen, setIsMappingEditorOpen] = useState(false)
           >
             <MappingEditor
               courseId={Number(courseId)}
+              termId={data.course.term.id}
               onClose={() => setIsMappingEditorOpen(false)}
             />
           </div>

@@ -14,27 +14,6 @@ class EvaluationLearningOutcomeSerializer(serializers.ModelSerializer):
         fields = ["id", "code", "description", "course", "created_at"]
 
 
-class AssessmentLearningOutcomeMappingListSerializer(serializers.ListSerializer):
-    """
-    Custom ListSerializer to validate that weights sum to 1.0
-    This is called when many=True is used
-    """
-
-    def validate(self, attrs):
-        # Calculate total weight
-        total_weight = sum(item.get("weight", 0) for item in attrs)
-
-        # Allow 1% tolerance for floating point arithmetic
-        if not (0.99 <= total_weight <= 1.01):
-            raise serializers.ValidationError(
-                {
-                    "weights": f"Learning Outcome weights must sum to 1.0, but got {total_weight:.4f}. "
-                    f"Please adjust the weights so they total exactly 1.0."
-                }
-            )
-        return attrs
-
-
 class AssessmentLearningOutcomeMappingSerializer(serializers.ModelSerializer):
     """Nested inside AssessmentSerializer"""
 
@@ -58,7 +37,37 @@ class AssessmentSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Assessment
-        fields = ["id", "name", "course", "date", "total_score", "weight", "lo_mappings", "created_at"]
+        fields = [
+            "id",
+            "name",
+            "assessment_type",
+            "description",
+            "course",
+            "date",
+            "total_score",
+            "weight",
+            "lo_mappings",
+            "created_at",
+        ]
+
+
+class BulkAssessmentLOMappingItem(serializers.Serializer):
+    """Single item in a bulk sync request."""
+
+    temp_id = serializers.IntegerField(required=False)
+    id = serializers.IntegerField(required=False)
+    assessment_id = serializers.IntegerField(required=False)
+    learning_outcome_id = serializers.IntegerField(required=False)
+    weight = serializers.FloatField(required=False)
+
+
+class BulkAssessmentLOMappingSerializer(serializers.Serializer):
+    """Bulk sync payload for assessment-LO mappings."""
+
+    course_id = serializers.IntegerField()
+    creates = BulkAssessmentLOMappingItem(many=True, required=False, default=list)
+    updates = BulkAssessmentLOMappingItem(many=True, required=False, default=list)
+    deletes = serializers.ListField(child=serializers.IntegerField(), required=False, default=list)
 
 
 class AssessmentCreateSerializer(serializers.ModelSerializer):
@@ -69,7 +78,7 @@ class AssessmentCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Assessment
-        fields = ["id", "name", "course", "date", "total_score", "weight", "assessment_type"]
+        fields = ["id", "name", "course", "date", "total_score", "weight", "assessment_type", "description"]
 
 
 class StudentGradeSerializer(serializers.ModelSerializer):
@@ -133,3 +142,33 @@ class ScoreRecomputeJobSerializer(serializers.ModelSerializer):
             "finished_at",
             "error",
         ]
+
+
+class BulkAssessmentDescriptionUpdateSerializer(serializers.Serializer):
+    """Bulk update assessment descriptions.
+
+    Request body:
+        {
+            "assessments": [
+                {"id": 1, "description": "Vize sınavı: ..."},
+                {"id": 2, "description": "Final sınavı: ..."},
+            ]
+        }
+    """
+
+    assessments = serializers.ListField(
+        child=serializers.DictField(),
+        min_length=1,
+    )
+
+    def validate_assessments(self, value):
+        for item in value:
+            if "id" not in item:
+                raise serializers.ValidationError("Each item must have an 'id' field.")
+            if "description" not in item:
+                raise serializers.ValidationError("Each item must have a 'description' field.")
+            if not isinstance(item["id"], int):
+                raise serializers.ValidationError("'id' must be an integer.")
+            if not isinstance(item["description"], str):
+                raise serializers.ValidationError("'description' must be a string.")
+        return value

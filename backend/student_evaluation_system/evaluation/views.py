@@ -1,4 +1,5 @@
 from rest_framework import generics, viewsets, status
+from django.shortcuts import get_object_or_404
 from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import IsAuthenticated
@@ -6,25 +7,32 @@ from drf_spectacular.utils import extend_schema_view, extend_schema, OpenApiPara
 from drf_spectacular.types import OpenApiTypes
 from django.db.models import Avg, Count, F, Sum, FloatField
 from django.db import transaction
+from django.utils import timezone
 
 from .models import Assessment, AssessmentLearningOutcomeMapping, StudentGrade, CourseEnrollment, ScoreRecomputeJob
 from .serializers import (
     AssessmentSerializer,
     AssessmentCreateSerializer,
     AssessmentLearningOutcomeMappingSerializer,
+    BulkAssessmentLOMappingSerializer,
+    BulkAssessmentDescriptionUpdateSerializer,
     StudentGradeSerializer,
     StudentGradeCreateSerializer,
     CourseEnrollmentSerializer,
     ScoreRecomputeJobSerializer,
 )
 from .services import calculate_course_scores, calculate_student_po_scores
-from core.models import StudentLearningOutcomeScore
+from core.models import LearningOutcome, StudentLearningOutcomeScore
 from core.permissions import (
     IsInstructorOfCourse,
     IsOwnerOrInstructorOrAdmin,
     IsEnrolledStudentOrInstructorOrAdmin,
     InstructorPermissionMixin,
 )
+
+import logging
+
+logger = logging.getLogger(__name__)
 
 
 @extend_schema_view(
@@ -118,6 +126,26 @@ class AssessmentViewSet(viewsets.ModelViewSet):
             }
         )
 
+    @extend_schema(
+        request=BulkAssessmentDescriptionUpdateSerializer,
+        responses={200: {"type": "object", "properties": {"updated_count": {"type": "integer"}}}},
+        description="Bulk update assessment descriptions. Used to set descriptions before AI weight suggestion.",
+    )
+    @action(detail=False, methods=["post"])
+    def bulk_descriptions(self, request):
+        """Bulk update assessment descriptions in a single transaction."""
+        serializer = BulkAssessmentDescriptionUpdateSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        updated_count = 0
+        with transaction.atomic():
+            for item in data["assessments"]:
+                Assessment.objects.filter(id=item["id"]).update(description=item["description"])
+                updated_count += 1
+
+        return Response({"updated_count": updated_count})
+
 
 @extend_schema_view(
     list=extend_schema(
@@ -177,6 +205,83 @@ class AssessmentLearningOutcomeMappingViewSet(viewsets.ModelViewSet):
         course_id = instance.assessment.course_id
         instance.delete()
         calculate_course_scores(course_id)
+
+    @extend_schema(request=BulkAssessmentLOMappingSerializer)
+    @action(detail=False, methods=["post"])
+    def bulk_sync(self, request):
+        """Apply assessment-LO mapping changes in bulk and trigger async score recompute."""
+        serializer = BulkAssessmentLOMappingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        created = []
+        updated = []
+        deleted_ids = []
+        affected_course_ids = set()
+
+        with transaction.atomic():
+            # Deletes
+            for mapping_id in data.get("deletes", []):
+                mapping = get_object_or_404(AssessmentLearningOutcomeMapping, pk=mapping_id)
+                course_id = mapping.assessment.course_id
+                affected_course_ids.add(course_id)
+                mapping.delete()
+                deleted_ids.append(mapping_id)
+
+            # Updates
+            for item in data.get("updates", []):
+                mapping = get_object_or_404(AssessmentLearningOutcomeMapping, pk=item["id"])
+                if "weight" in item:
+                    mapping.weight = item["weight"]
+                    mapping.save(update_fields=["weight"])
+                    affected_course_ids.add(mapping.assessment.course_id)
+                updated.append(AssessmentLearningOutcomeMappingSerializer(mapping).data)
+
+            # Creates
+            for item in data.get("creates", []):
+                assessment = get_object_or_404(Assessment, pk=item["assessment_id"])
+                learning_outcome = get_object_or_404(LearningOutcome, pk=item["learning_outcome_id"])
+                mapping = AssessmentLearningOutcomeMapping.objects.create(
+                    assessment=assessment,
+                    learning_outcome=learning_outcome,
+                    weight=item["weight"],
+                )
+                affected_course_ids.add(assessment.course_id)
+                result = AssessmentLearningOutcomeMappingSerializer(mapping).data
+                result["temp_id"] = item.get("temp_id")
+                created.append(result)
+
+        # Dispatch async score recompute (non-blocking) or fall back to sync
+        job_ids = []
+        for course_id in affected_course_ids:
+            job = ScoreRecomputeJob.objects.create(
+                task_type=ScoreRecomputeJob.TASK_TYPE_COURSE_RECOMPUTE,
+                status=ScoreRecomputeJob.STATUS_PENDING,
+                course_id=course_id,
+                triggered_by=request.user,
+            )
+            try:
+                from evaluation.tasks import recompute_course_scores_task
+
+                async_result = recompute_course_scores_task.delay(course_id, job.pk)
+                job.celery_task_id = async_result.id
+                job.save(update_fields=["celery_task_id"])
+            except Exception:
+                # Celery unavailable — fall back to synchronous calculation
+                calculate_course_scores(course_id)
+                job.status = ScoreRecomputeJob.STATUS_SUCCESS
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "finished_at"])
+            job_ids.append(job.pk)
+
+        return Response(
+            {
+                "created": created,
+                "updated": updated,
+                "deleted": deleted_ids,
+                "recompute_job_ids": job_ids,
+            }
+        )
 
 
 @extend_schema_view(

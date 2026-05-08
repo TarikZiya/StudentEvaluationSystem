@@ -192,10 +192,10 @@ def sample_course(db_setup):
     lo2 = LearningOutcome.objects.create(code="LO2", description="Identify and formulate problems", course=course)
 
     # Create LO-PO mappings
-    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo1, program_outcome=po1, weight=0.6)
-    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo1, program_outcome=po2, weight=0.4)
-    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo2, program_outcome=po1, weight=0.3)
-    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo2, program_outcome=po2, weight=0.7)
+    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo1, program_outcome=po1, weight=3)
+    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo1, program_outcome=po2, weight=2)
+    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo2, program_outcome=po1, weight=2)
+    LearningOutcomeProgramOutcomeMapping.objects.create(course=course, learning_outcome=lo2, program_outcome=po2, weight=4)
 
     return {
         "course": course,
@@ -328,10 +328,22 @@ def assessment_lo_mappings(sample_assessments, sample_course):
     mappings = []
     for assessment in assessments:
         for lo in learning_outcomes:
-            mapping = AssessmentLearningOutcomeMapping.objects.create(assessment=assessment, learning_outcome=lo, weight=0.5)
+            mapping = AssessmentLearningOutcomeMapping.objects.create(assessment=assessment, learning_outcome=lo, weight=3)
             mappings.append(mapping)
 
     return {"mappings": mappings, "assessments": assessments, "learning_outcomes": learning_outcomes}
+
+
+@pytest.fixture
+def sample_instructor(db_setup, instructor_factory):
+    """
+    Creates an instructor user and adds them to the sample course as instructor.
+    Returns the User object.
+    """
+    course = db_setup["course"]
+    instructor = instructor_factory("test_instr")
+    course.instructors.add(instructor.user)
+    return instructor.user
 
 
 # Factory-boy fixtures for new tests
@@ -490,6 +502,45 @@ def program_factory(db):
 
 
 # Add this at the end of your conftest.py to ensure Django is setup
+@pytest.fixture
+def weight_suggestion_job_factory(db):
+    """Factory for WeightSuggestionJob records."""
+    from core.models import WeightSuggestionJob
+
+    def _create_job(**kwargs):
+        defaults = {
+            "status": WeightSuggestionJob.STATUS_PENDING,
+        }
+        defaults.update(kwargs)
+        return WeightSuggestionJob.objects.create(**defaults)
+
+    return _create_job
+
+
+@pytest.fixture
+def course_with_los(db_setup):
+    """Creates a course with 3 learning outcomes (no assessments)."""
+    from core.models import LearningOutcome
+
+    course = db_setup["course"]
+    lo1 = LearningOutcome.objects.create(
+        code="LO1",
+        description="Explains operating system components",
+        course=course,
+    )
+    lo2 = LearningOutcome.objects.create(
+        code="LO2",
+        description="Compares process management algorithms",
+        course=course,
+    )
+    lo3 = LearningOutcome.objects.create(
+        code="LO3",
+        description="Analyzes memory management techniques",
+        course=course,
+    )
+    return {"course": course, "los": [lo1, lo2, lo3]}
+
+
 def pytest_configure():
     """Configure Django for pytest."""
     import os
@@ -502,3 +553,16 @@ def pytest_configure():
     # Configure Django if not already configured
     if not settings.configured:
         django.setup()
+
+
+@pytest.fixture(autouse=True)
+def _test_settings(settings):
+    """Override settings so tests don't need Redis or a Celery broker."""
+    settings.CACHES = {
+        "default": {
+            "BACKEND": "django.core.cache.backends.locmem.LocMemCache",
+            "LOCATION": "test-cache",
+        }
+    }
+    settings.CELERY_TASK_ALWAYS_EAGER = True
+    settings.CELERY_TASK_EAGER_PROPAGATES = False

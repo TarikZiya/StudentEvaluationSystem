@@ -8,6 +8,8 @@ Contains ViewSets for managing:
 - LearningOutcomeProgramOutcomeMappings
 """
 
+from django.db import transaction
+from django.utils import timezone
 from rest_framework import viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
@@ -21,12 +23,14 @@ from ..models import (
     ProgramOutcome,
     LearningOutcome,
     LearningOutcomeProgramOutcomeMapping,
+    Term,
 )
 from ..serializers import (
     CourseSerializer,
     ProgramOutcomeSerializer,
     CoreLearningOutcomeSerializer,
     LearningOutcomeProgramOutcomeMappingSerializer,
+    BulkLOPOMappingSerializer,
 )
 from ..permissions import InstructorPermissionMixin
 
@@ -81,33 +85,35 @@ class CourseViewSet(viewsets.ModelViewSet):
             return [IsAuthenticated()]
         return [permission() for permission in self.permission_classes]
 
+    def _apply_role_filters(self, queryset, user):
+        """Scope courses by user role. Instructors see only their courses, etc."""
+        if not getattr(user, "is_authenticated", False):
+            return queryset
+        if getattr(user, "is_admin_user", False):
+            return queryset
+        if getattr(user, "is_instructor", False):
+            return queryset.filter(instructors=user)
+        if getattr(user, "is_student", False):
+            from evaluation.models import CourseEnrollment
+
+            enrolled_course_ids = CourseEnrollment.objects.filter(student=user).values_list("course_id", flat=True)
+            return queryset.filter(id__in=enrolled_course_ids)
+        if hasattr(user, "program_head_profile"):
+            programs = Program.objects.filter(pk=user.program_head_profile.program_id)
+            return queryset.filter(program__in=programs)
+        return queryset.none()
+
     def get_queryset(self):
         """
         Filter courses based on user role:
-        - Instructors: only courses they teach
+        - Instructors: only courses they teach (auto-scoped to active term)
         - Admins: all courses
         """
         user = self.request.user
         queryset = super().get_queryset()
+        queryset = self._apply_role_filters(queryset, user)
 
-        # Role-based visibility for authenticated users
-        if getattr(user, "is_authenticated", False):
-            if getattr(user, "is_admin_user", False):
-                pass
-            elif getattr(user, "is_instructor", False):
-                queryset = queryset.filter(instructors=user)
-            elif getattr(user, "is_student", False):
-                from evaluation.models import CourseEnrollment
-
-                enrolled_course_ids = CourseEnrollment.objects.filter(student=user).values_list("course_id", flat=True)
-                queryset = queryset.filter(id__in=enrolled_course_ids)
-            elif hasattr(user, "program_head_profile"):
-                programs = Program.objects.filter(pk=user.program_head_profile.program_id)
-                queryset = queryset.filter(program__in=programs)
-            else:
-                queryset = queryset.none()
-
-        # Apply query filters
+        # Apply query params
         department_id = self.request.query_params.get("department", None)
         term_id = self.request.query_params.get("term", None)
         instructor_id = self.request.query_params.get("instructor", None)
@@ -121,6 +127,21 @@ class CourseViewSet(viewsets.ModelViewSet):
             queryset = queryset.filter(instructors__id=instructor_id)
         if program_id:
             queryset = queryset.filter(program_id=program_id)
+
+        # Auto-scope instructors and program heads to the active term unless
+        # they explicitly filter by a specific term (so the dashboard shows
+        # current courses by default, but the courses page can look at history).
+        # We only apply this default scope on list views, not retrieve/detail views,
+        # so that users can still view older courses via direct links (like CourseDetail).
+        if (
+            self.action == "list"
+            and getattr(user, "is_authenticated", False)
+            and (getattr(user, "is_instructor", False) or hasattr(user, "program_head_profile"))
+            and not term_id
+        ):
+            active_term = Term.objects.filter(is_active=True).first()
+            if active_term:
+                queryset = queryset.filter(term=active_term)
 
         return queryset.distinct()
 
@@ -220,3 +241,87 @@ class LearningOutcomeProgramOutcomeMappingViewSet(viewsets.ModelViewSet):
     serializer_class = LearningOutcomeProgramOutcomeMappingSerializer
     permission_classes = [AllowAny, InstructorPermissionMixin]
     resource_area = "lo_po_weights"
+
+    @extend_schema(request=BulkLOPOMappingSerializer)
+    @action(detail=False, methods=["post"])
+    def bulk_sync(self, request):
+        """Apply LO-PO mapping changes in bulk and trigger async PO score recompute."""
+        from django.shortcuts import get_object_or_404
+
+        serializer = BulkLOPOMappingSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        data = serializer.validated_data
+
+        created = []
+        updated = []
+        deleted_ids = []
+        affected_course_ids = set()
+
+        with transaction.atomic():
+            # Deletes
+            for mapping_id in data.get("deletes", []):
+                mapping = get_object_or_404(LearningOutcomeProgramOutcomeMapping, pk=mapping_id)
+                affected_course_ids.add(mapping.course_id)
+                mapping.delete()
+                deleted_ids.append(mapping_id)
+
+            # Updates
+            for item in data.get("updates", []):
+                mapping = get_object_or_404(LearningOutcomeProgramOutcomeMapping, pk=item["id"])
+                if "weight" in item:
+                    mapping.weight = item["weight"]
+                    mapping.save(update_fields=["weight"])
+                    affected_course_ids.add(mapping.course_id)
+                updated.append(LearningOutcomeProgramOutcomeMappingSerializer(mapping).data)
+
+            # Creates
+            for item in data.get("creates", []):
+                learning_outcome = get_object_or_404(LearningOutcome, pk=item["learning_outcome_id"])
+                program_outcome = get_object_or_404(ProgramOutcome, pk=item["program_outcome_id"])
+                course = get_object_or_404(Course, pk=data["course_id"])
+                mapping = LearningOutcomeProgramOutcomeMapping.objects.create(
+                    learning_outcome=learning_outcome,
+                    program_outcome=program_outcome,
+                    course=course,
+                    weight=item["weight"],
+                )
+                affected_course_ids.add(course.id)
+                result = LearningOutcomeProgramOutcomeMappingSerializer(mapping).data
+                result["temp_id"] = item.get("temp_id")
+                created.append(result)
+
+        # Dispatch async score recompute (non-blocking) or fall back to sync
+        job_ids = []
+        from evaluation.models import ScoreRecomputeJob
+
+        for course_id in affected_course_ids:
+            job = ScoreRecomputeJob.objects.create(
+                task_type=ScoreRecomputeJob.TASK_TYPE_COURSE_RECOMPUTE,
+                status=ScoreRecomputeJob.STATUS_PENDING,
+                course_id=course_id,
+                triggered_by=request.user,
+            )
+            try:
+                from evaluation.tasks import recompute_course_scores_task
+
+                async_result = recompute_course_scores_task.delay(course_id, job.pk)
+                job.celery_task_id = async_result.id
+                job.save(update_fields=["celery_task_id"])
+            except Exception:
+                # Celery unavailable — fall back to synchronous calculation
+                from evaluation.services import calculate_course_scores
+
+                calculate_course_scores(course_id)
+                job.status = ScoreRecomputeJob.STATUS_SUCCESS
+                job.finished_at = timezone.now()
+                job.save(update_fields=["status", "finished_at"])
+            job_ids.append(job.pk)
+
+        return Response(
+            {
+                "created": created,
+                "updated": updated,
+                "deleted": deleted_ids,
+                "recompute_job_ids": job_ids,
+            }
+        )

@@ -32,7 +32,6 @@ from ..serializers import (
     DegreeLevelSerializer,
     ProgramSerializer,
     TermSerializer,
-    CourseSerializer,
     ProgramOutcomeSerializer,
     CoreLearningOutcomeSerializer,
     LearningOutcomeProgramOutcomeMappingSerializer,
@@ -205,89 +204,6 @@ class TermViewSet(viewsets.ModelViewSet):
             serializer = self.get_serializer(active_term)
             return Response(serializer.data)
         return Response({"detail": "No active term found."}, status=404)
-
-
-@extend_schema_view(
-    list=extend_schema(
-        parameters=[
-            OpenApiParameter(
-                name="department",
-                type=OpenApiTypes.INT,
-                location=OpenApiParameter.QUERY,
-                description="Filter courses by department ID",
-            ),
-            OpenApiParameter(
-                name="term", type=OpenApiTypes.INT, location=OpenApiParameter.QUERY, description="Filter courses by term ID"
-            ),
-            OpenApiParameter(
-                name="instructor",
-                type=OpenApiTypes.INT,
-                location=OpenApiParameter.QUERY,
-                description="Filter courses by instructor ID",
-            ),
-        ]
-    )
-)
-class CourseViewSet(viewsets.ModelViewSet):
-    """
-    CRUD operations for courses.
-
-    Permissions:
-    - Read: Instructors and Admins
-    - Write: Instructors (own courses) and Admins
-    """
-
-    queryset = Course.objects.select_related("program", "term").prefetch_related("instructors").all()
-    serializer_class = CourseSerializer
-    permission_classes = [AllowAny, IsAdminOrProgramHeadOrReadOnly]
-
-    def get_queryset(self):
-        """
-        Filter courses based on user role:
-        - Instructors: only courses they teach
-        - Admins: all courses
-        """
-        user = self.request.user
-        queryset = super().get_queryset()
-
-        # Instructors only see their own courses
-        if user.is_instructor and not user.is_admin_user:
-            queryset = queryset.filter(instructors=user)
-
-        # Apply query filters
-        department_id = self.request.query_params.get("department", None)
-        term_id = self.request.query_params.get("term", None)
-        instructor_id = self.request.query_params.get("instructor", None)
-
-        if department_id:
-            queryset = queryset.filter(department_id=department_id)
-        if term_id:
-            queryset = queryset.filter(term_id=term_id)
-        if instructor_id:
-            queryset = queryset.filter(instructors__id=instructor_id)
-
-        return queryset
-        queryset = super().get_queryset()
-        department_id = self.request.query_params.get("department", None)
-        term_id = self.request.query_params.get("term", None)
-        instructor_id = self.request.query_params.get("instructor", None)
-
-        if department_id:
-            queryset = queryset.filter(department_id=department_id)
-        if term_id:
-            queryset = queryset.filter(term_id=term_id)
-        if instructor_id:
-            queryset = queryset.filter(instructors__id=instructor_id)
-
-        return queryset
-
-    @action(detail=True, methods=["get"])
-    def learning_outcomes(self, request, pk=None):
-        """Get all learning outcomes for this course."""
-        course = self.get_object()
-        outcomes = course.learning_outcomes.all()
-        serializer = CoreLearningOutcomeSerializer(outcomes, many=True)
-        return Response(serializer.data)
 
 
 @extend_schema_view(
@@ -537,15 +453,16 @@ class StudentLearningOutcomeScoreViewSet(viewsets.ReadOnlyModelViewSet):
                 avg_result = lo_scores_query.aggregate(avg_score=Avg("score"))
                 avg_score = avg_result["avg_score"]
 
-                # Check if scores are in decimal format (0-1) and convert to percentage
-                # Assuming scores > 1 are already percentages
-                if avg_score is not None and avg_score <= 1:
-                    avg_score = avg_score * 100
+                # Scores are always stored and returned as percentages (0-100)
             else:
                 avg_score = None
 
             course_averages.append(
-                {"course_id": cid, "weighted_average": round(avg_score, 2) if avg_score is not None else None}
+                {
+                    "course_id": cid,
+                    "weighted_average": round(avg_score, 2) if avg_score is not None else None,
+                    "score_format": "percentage",
+                }
             )
 
         return Response(course_averages)
@@ -598,15 +515,14 @@ class StudentLearningOutcomeScoreViewSet(viewsets.ReadOnlyModelViewSet):
         result = []
         for item in lo_averages:
             avg_score = item["avg_score"]
-            # Convert to percentage if in decimal format
-            if avg_score is not None and avg_score <= 1:
-                avg_score = avg_score * 100
+            # Scores are always stored and returned as percentages (0-100)
 
             result.append(
                 {
                     "lo_code": item["learning_outcome__code"],
                     "lo_description": item["learning_outcome__description"],
                     "avg_score": round(avg_score, 2) if avg_score is not None else 0,
+                    "score_format": "percentage",
                 }
             )
 
@@ -687,31 +603,6 @@ class StudentProgramOutcomeScoreViewSet(viewsets.ReadOnlyModelViewSet):
 class StudentListView(generics.ListAPIView):
     queryset = StudentProfile.objects.select_related("user", "enrollment_term", "program").all()
     serializer_class = StudentProfileSerializer
-
-
-class StudentDetailView(generics.RetrieveAPIView):
-    queryset = StudentProfile.objects.select_related("user", "enrollment_term", "program").all()
-    serializer_class = StudentProfileSerializer
-
-
-class CourseListView(generics.ListAPIView):
-    queryset = Course.objects.select_related("department", "term").prefetch_related("instructors").all()
-    serializer_class = CourseSerializer
-
-
-class CourseDetailView(generics.RetrieveAPIView):
-    queryset = Course.objects.select_related("department", "term").prefetch_related("instructors").all()
-    serializer_class = CourseSerializer
-
-
-class ProgramOutcomeListView(generics.ListAPIView):
-    queryset = ProgramOutcome.objects.select_related("department", "term", "created_by").all()
-    serializer_class = ProgramOutcomeSerializer
-
-
-class ProgramOutcomeDetailView(generics.RetrieveAPIView):
-    queryset = ProgramOutcome.objects.select_related("department", "term", "created_by").all()
-    serializer_class = ProgramOutcomeSerializer
 
 
 class BaseFileImportViewSet(viewsets.GenericViewSet):

@@ -7,8 +7,10 @@
  */
 import type { ProgramStat } from './programStat';
 import type { YearLevelBreakdown } from './yearLevelBreakdown';
+import type { GpaByYear } from './gpaByYear';
 
 export interface ProgramStatsResponse {
   programs: ProgramStat[];
   year_level_breakdown: YearLevelBreakdown[];
+  gpa_by_year: GpaByYear[];
 }
