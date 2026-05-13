@@ -2,8 +2,8 @@ import { useMemo } from 'react'
 import { useParams } from 'react-router-dom'
 import { useQueries } from '@tanstack/react-query'
 import { useAuth } from '../../auth/hooks/useAuth'
-import { Card } from '../../../shared/components/ui/Card'
-import { LazyChartWidget as ChartWidget } from '../../../shared/components/ui/LazyChartWidget'
+import { Card } from '@/components/ui/custom/Card'
+import { LazyChartWidget as ChartWidget } from '@/components/ui/custom/LazyChartWidget'
 import {
   ChartBarIcon,
   AcademicCapIcon,
@@ -12,10 +12,8 @@ import {
 import { coreCoursesRetrieve, coreCoursesLearningOutcomesRetrieve } from '../../../shared/api/generated/core/core'
 import { coreStudentLoScoresList } from '../../../shared/api/generated/scores/scores'
 import { evaluationGradesList, evaluationGradesCourseAveragesRetrieve } from '../../../shared/api/generated/evaluation/evaluation'
+import { isRecord } from '@/shared/utils/guards'
 import type { CoreLearningOutcome } from '../../../shared/api/model'
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null
 
 const getAssessmentType = (assessment: unknown): string => {
   if (!isRecord(assessment)) {

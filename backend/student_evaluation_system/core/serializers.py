@@ -11,7 +11,6 @@ from rest_framework import serializers
 from core.models import (
     Course,
     CourseTemplate,
-    CourseTemplateAssessment,
     CourseTemplateAssessmentLOMapping,
     CourseTemplateLearningOutcome,
     CourseTemplateLOPOMapping,
@@ -533,18 +532,31 @@ class CourseTemplateAssessmentSerializer(serializers.ModelSerializer):
     """Serializer for CourseTemplateAssessment."""
 
     class Meta:
-        model = CourseTemplateAssessment
+        model = WeightSuggestionJob
         fields = [
             "id",
-            "name",
-            "assessment_type",
-            "total_score",
-            "weight",
-            "course_template",
+            "status",
+            "result",
+            "error",
+            "started_at",
+            "finished_at",
             "created_at",
             "updated_at",
         ]
-        read_only_fields = ["id", "created_at", "updated_at"]
+
+
+class JobProgressEventSerializer(serializers.Serializer):
+    """SSE event payload for job progress and completion events."""
+
+    type = serializers.ChoiceField(choices=["progress", "complete"], help_text="Event type")
+    job_id = serializers.IntegerField(help_text="ID of the job this event relates to")
+    status = serializers.ChoiceField(choices=["running", "success", "failed"], help_text="Current job status")
+    current = serializers.IntegerField(required=False, help_text="Current progress step (progress events)")
+    total = serializers.IntegerField(required=False, help_text="Total steps (progress events)")
+    created = serializers.IntegerField(required=False, help_text="Items created so far (progress events)")
+    courses_created = serializers.IntegerField(required=False, help_text="Total courses created (complete events)")
+    total_templates = serializers.IntegerField(required=False, help_text="Total templates processed (complete events)")
+    error = serializers.CharField(required=False, allow_blank=True, help_text="Error message if status is failed")
 
 
 class CourseTemplateAssessmentLOMappingSerializer(serializers.ModelSerializer):
@@ -567,6 +579,58 @@ class InstantiateCourseTemplateSerializer(serializers.Serializer):
     """Serializer for instantiating a course from a template."""
 
     term_id = serializers.IntegerField()
+
+
+class NextTermSerializer(serializers.Serializer):
+    semester = serializers.ChoiceField(choices=["fall", "spring", "summer"])
+    academic_year = serializers.IntegerField(min_value=2000, max_value=2100)
+    template_ids = serializers.ListField(child=serializers.IntegerField(), allow_empty=True, default=list)
+
+    def validate_template_ids(self, value):
+        if not value:
+            return value
+
+        user = self.context["request"].user
+        from core.models import CourseTemplate
+
+        if getattr(user, "is_admin_user", False):
+            templates = CourseTemplate.objects.filter(id__in=value)
+        else:
+            profile = getattr(user, "program_head_profile", None)
+            if profile is None:
+                raise serializers.ValidationError("Unable to determine program access.")
+            templates = CourseTemplate.objects.filter(id__in=value, program_id=profile.program_id)
+
+        found_ids = set(templates.values_list("id", flat=True))
+        missing = set(value) - found_ids
+        if missing:
+            raise serializers.ValidationError(f"Invalid or inaccessible template IDs: {sorted(missing)}")
+        return value
+
+    def create(self, validated_data):
+        from django.db import transaction
+        from core.models import Term
+
+        old_term = self.context["old_term"]
+        with transaction.atomic():
+            old_term.is_active = False
+            old_term.save()
+
+            semester_tr = {"fall": "Güz", "spring": "Bahar", "summer": "Yaz"}[validated_data["semester"]]
+            ay = validated_data["academic_year"]
+            if validated_data["semester"] == "fall":
+                name = f"{semester_tr} {ay}-{ay + 1}"
+            else:
+                name = f"{semester_tr} {ay - 1}-{ay}"
+
+            new_term = Term.objects.create(
+                semester=validated_data["semester"],
+                academic_year=ay,
+                name=name,
+                is_active=True,
+            )
+
+        return new_term
 
 
 class WeightSuggestionJobSerializer(serializers.ModelSerializer):

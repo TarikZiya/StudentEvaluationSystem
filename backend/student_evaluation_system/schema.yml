@@ -584,16 +584,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: {}
+              $ref: '#/components/schemas/InstantiateCourseTemplate'
           application/x-www-form-urlencoded:
             schema:
-              type: object
-              additionalProperties: {}
+              $ref: '#/components/schemas/InstantiateCourseTemplate'
           multipart/form-data:
             schema:
-              type: object
-              additionalProperties: {}
+              $ref: '#/components/schemas/InstantiateCourseTemplate'
+        required: true
       security:
       - jwtCookie: []
       - {}
@@ -1273,6 +1271,24 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/core/events/:
+    get:
+      operationId: core_events_retrieve
+      description: Subscribe to Redis pub/sub channels for real-time job progress
+        updates. Pass comma-separated channel names via the `channels` query parameter
+        (e.g. `?channels=jobs.42,notifications.5`).
+      summary: Stream job progress via SSE
+      tags:
+      - core
+      security:
+      - jwtCookie: []
+      responses:
+        '200':
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/JobProgressEvent'
+          description: ''
   /api/core/file-import/assignment-scores/resolve/:
     post:
       operationId: core_file_import_assignment_scores_resolve_create
@@ -1994,6 +2010,11 @@ paths:
       operationId: core_lo_po_mappings_list
       description: CRUD operations for LO-PO mappings.
       parameters:
+      - in: query
+        name: course
+        schema:
+          type: integer
+        description: Filter LO-PO mappings by course ID
       - name: page
         required: false
         in: query
@@ -3149,6 +3170,39 @@ paths:
       description: Get currently active term.
       tags:
       - core
+      security:
+      - jwtCookie: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Term'
+          description: ''
+  /api/core/terms/next-term/:
+    post:
+      operationId: core_terms_next_term_create
+      description: |-
+        CRUD operations for terms.
+
+        Permissions:
+        - Read: Any authenticated user
+        - Write: Admin only
+      tags:
+      - core
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Term'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Term'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Term'
+        required: true
       security:
       - jwtCookie: []
       - {}
@@ -5965,16 +6019,14 @@ paths:
         content:
           application/json:
             schema:
-              type: object
-              additionalProperties: {}
+              $ref: '#/components/schemas/InstantiateCourseTemplate'
           application/x-www-form-urlencoded:
             schema:
-              type: object
-              additionalProperties: {}
+              $ref: '#/components/schemas/InstantiateCourseTemplate'
           multipart/form-data:
             schema:
-              type: object
-              additionalProperties: {}
+              $ref: '#/components/schemas/InstantiateCourseTemplate'
+        required: true
       security:
       - jwtCookie: []
       - {}
@@ -6651,6 +6703,24 @@ paths:
       responses:
         '204':
           description: No response body
+  /api/v1/core/events/:
+    get:
+      operationId: v1_core_events_retrieve
+      description: Subscribe to Redis pub/sub channels for real-time job progress
+        updates. Pass comma-separated channel names via the `channels` query parameter
+        (e.g. `?channels=jobs.42,notifications.5`).
+      summary: Stream job progress via SSE
+      tags:
+      - v1
+      security:
+      - jwtCookie: []
+      responses:
+        '200':
+          content:
+            text/event-stream:
+              schema:
+                $ref: '#/components/schemas/JobProgressEvent'
+          description: ''
   /api/v1/core/file-import/assignment-scores/resolve/:
     post:
       operationId: v1_core_file_import_assignment_scores_resolve_create
@@ -7372,6 +7442,11 @@ paths:
       operationId: v1_core_lo_po_mappings_list
       description: CRUD operations for LO-PO mappings.
       parameters:
+      - in: query
+        name: course
+        schema:
+          type: integer
+        description: Filter LO-PO mappings by course ID
       - name: page
         required: false
         in: query
@@ -8527,6 +8602,39 @@ paths:
       description: Get currently active term.
       tags:
       - v1
+      security:
+      - jwtCookie: []
+      - {}
+      responses:
+        '200':
+          content:
+            application/json:
+              schema:
+                $ref: '#/components/schemas/Term'
+          description: ''
+  /api/v1/core/terms/next-term/:
+    post:
+      operationId: v1_core_terms_next_term_create
+      description: |-
+        CRUD operations for terms.
+
+        Permissions:
+        - Read: Any authenticated user
+        - Write: Admin only
+      tags:
+      - v1
+      requestBody:
+        content:
+          application/json:
+            schema:
+              $ref: '#/components/schemas/Term'
+          application/x-www-form-urlencoded:
+            schema:
+              $ref: '#/components/schemas/Term'
+          multipart/form-data:
+            schema:
+              $ref: '#/components/schemas/Term'
+        required: true
       security:
       - jwtCookie: []
       - {}
@@ -11136,6 +11244,12 @@ components:
                     - last_name: Instructor's last name
                     - title: Academic title (if available)
           readOnly: true
+        instructor_ids:
+          type: array
+          items:
+            type: integer
+            writeOnly: true
+          writeOnly: true
         created_at:
           type: string
           format: date-time
@@ -11160,6 +11274,9 @@ components:
         student:
           type: string
           readOnly: true
+        student_id:
+          type: integer
+          readOnly: true
         course:
           allOf:
           - $ref: '#/components/schemas/Course'
@@ -11173,6 +11290,7 @@ components:
       - enrolled_at
       - id
       - student
+      - student_id
     CourseTemplate:
       type: object
       description: |-
@@ -11440,6 +11558,14 @@ components:
       - gpa
       - student_count
       - year
+    InstantiateCourseTemplate:
+      type: object
+      description: Serializer for instantiating a course from a template.
+      properties:
+        term_id:
+          type: integer
+      required:
+      - term_id
     InstructorPermission:
       type: object
       properties:
@@ -11495,6 +11621,62 @@ components:
       - id
       - user
       - user_id
+    JobProgressEvent:
+      type: object
+      description: SSE event payload for job progress and completion events.
+      properties:
+        type:
+          allOf:
+          - $ref: '#/components/schemas/TypeEnum'
+          description: |-
+            Event type
+
+            * `progress` - progress
+            * `complete` - complete
+        job_id:
+          type: integer
+          description: ID of the job this event relates to
+        status:
+          allOf:
+          - $ref: '#/components/schemas/JobProgressEventStatusEnum'
+          description: |-
+            Current job status
+
+            * `running` - running
+            * `success` - success
+            * `failed` - failed
+        current:
+          type: integer
+          description: Current progress step (progress events)
+        total:
+          type: integer
+          description: Total steps (progress events)
+        created:
+          type: integer
+          description: Items created so far (progress events)
+        courses_created:
+          type: integer
+          description: Total courses created (complete events)
+        total_templates:
+          type: integer
+          description: Total templates processed (complete events)
+        error:
+          type: string
+          description: Error message if status is failed
+      required:
+      - job_id
+      - status
+      - type
+    JobProgressEventStatusEnum:
+      enum:
+      - running
+      - success
+      - failed
+      type: string
+      description: |-
+        * `running` - running
+        * `success` - success
+        * `failed` - failed
     LearningOutcomeProgramOutcomeMapping:
       type: object
       description: |-
@@ -12290,6 +12472,12 @@ components:
                     - last_name: Instructor's last name
                     - title: Academic title (if available)
           readOnly: true
+        instructor_ids:
+          type: array
+          items:
+            type: integer
+            writeOnly: true
+          writeOnly: true
         created_at:
           type: string
           format: date-time
@@ -12302,6 +12490,9 @@ components:
           readOnly: true
         student:
           type: string
+          readOnly: true
+        student_id:
+          type: integer
           readOnly: true
         course:
           allOf:
@@ -12776,7 +12967,7 @@ components:
           nullable: true
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEnum'
+          - $ref: '#/components/schemas/StatusA93Enum'
           readOnly: true
         celery_task_id:
           type: string
@@ -13024,7 +13215,7 @@ components:
         task_type:
           $ref: '#/components/schemas/TaskTypeEnum'
         status:
-          $ref: '#/components/schemas/StatusEnum'
+          $ref: '#/components/schemas/StatusA93Enum'
         course:
           type: integer
           nullable: true
@@ -13066,7 +13257,7 @@ components:
         * `fall` - Fall
         * `spring` - Spring
         * `summer` - Summer
-    StatusEnum:
+    StatusA93Enum:
       enum:
       - pending
       - running
@@ -13279,6 +13470,14 @@ components:
       - access
       - refresh
       - user
+    TypeEnum:
+      enum:
+      - progress
+      - complete
+      type: string
+      description: |-
+        * `progress` - progress
+        * `complete` - complete
     University:
       type: object
       description: |-
@@ -13346,7 +13545,7 @@ components:
           nullable: true
         status:
           allOf:
-          - $ref: '#/components/schemas/StatusEnum'
+          - $ref: '#/components/schemas/StatusA93Enum'
           readOnly: true
         celery_task_id:
           type: string

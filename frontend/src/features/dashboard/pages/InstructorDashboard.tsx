@@ -1,34 +1,31 @@
-import { useMemo, useState } from 'react'
+import { useMemo, useState, useCallback } from 'react'
 import { useQuery, useQueries } from '@tanstack/react-query'
-import { Card } from '../../../shared/components/ui/Card'
 import FileUploadModal from '../../courses/components/FileUploadModal'
-import { ChartWidget } from '../../../shared/components/ui/ChartWidget'
+import { Card } from '@/components/ui/custom/Card'
+import { ChartWidget } from '@/components/ui/custom/ChartWidget'
 import { ChevronLeft, ChevronRight, Upload } from 'lucide-react'
 import { useAuth } from '../../auth/hooks/useAuth'
 import {
-  coreCoursesList
-} from '../../../shared/api/generated/core/core'
-
-import {
+  coreCoursesList,
   coreStudentLoScoresLoAveragesRetrieve
 } from '../../../shared/api/generated/core/core'
 import { evaluationGradesCourseAveragesRetrieve } from '../../../shared/api/generated/evaluation/evaluation'
-import type { Course } from '../../../shared/api/model/course'
+import { isRecord } from '@/shared/utils/guards'
+import { CourseAnalyticsCard } from '../components/CourseAnalyticsCard'
+import { GradeDistributionChart } from '../components/GradeDistributionChart'
 import {
-  UserGroupIcon,
-  AcademicCapIcon,
-  ExclamationTriangleIcon,
-  BookOpenIcon
-} from '@heroicons/react/24/outline'
+  calculateGradeDistribution,
+  calculateAverageScore,
+  identifyStudentsAtRisk,
+} from '../utils/analytics'
+import type { Course } from '../../../shared/api/model/course'
+import { ExclamationTriangleIcon } from '@heroicons/react/24/outline'
 
 interface LoAverageItem {
   lo_code: string
   lo_description?: string
   avg_score: number
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null
 
 const toLoAverages = (value: unknown): LoAverageItem[] => {
   if (!Array.isArray(value)) {
@@ -105,53 +102,6 @@ const InstructorDashboard = () => {
   const currentAnalytics = analyticsQueries[currentIndex]
   const analyticsError = currentAnalytics?.isError ?? false
 
-  // Helper functions to process API data
-  const calculateGradeDistribution = (gradeAverages: Array<{ weighted_average: number | null }>) => {
-    // Filter out null values and get valid averages
-    const validAverages = gradeAverages
-      .map(g => g.weighted_average)
-      .filter((avg): avg is number => avg !== null)
-
-    if (validAverages.length === 0) {
-      return []
-    }
-
-    // Grade distribution based on grade averages
-    const distribution = {
-      A: validAverages.filter(s => s >= 90).length,
-      B: validAverages.filter(s => s >= 80 && s < 90).length,
-      C: validAverages.filter(s => s >= 70 && s < 80).length,
-      D: validAverages.filter(s => s >= 60 && s < 70).length,
-      F: validAverages.filter(s => s < 60).length
-    }
-
-    return [
-      { grade: 'A', count: distribution.A, color: '#10b981' },
-      { grade: 'B', count: distribution.B, color: '#22c55e' },
-      { grade: 'C', count: distribution.C, color: '#eab308' },
-      { grade: 'D', count: distribution.D, color: '#f97316' },
-      { grade: 'F', count: distribution.F, color: '#ef4444' },
-    ].filter(item => item.count > 0)
-  }
-
-  const calculateAverageScore = (gradeAverages: Array<{ weighted_average: number | null }>) => {
-    const validAverages = gradeAverages
-      .map(g => g.weighted_average)
-      .filter((avg): avg is number => avg !== null)
-
-    if (validAverages.length === 0) return 0
-    const total = validAverages.reduce((sum, score) => sum + score, 0)
-    return Math.round(total / validAverages.length)
-  }
-
-  const identifyStudentsAtRisk = (gradeAverages: Array<{ weighted_average: number | null }>) => {
-    const validAverages = gradeAverages
-      .map(g => g.weighted_average)
-      .filter((avg): avg is number => avg !== null)
-
-    return validAverages.filter(average => average < 60).length
-  }
-
   // Combine course data with analytics
   // Create a Map for O(1) lookup of analytics by course ID
   const analyticsMap = new Map<number, CourseAnalytics>()
@@ -206,8 +156,16 @@ const InstructorDashboard = () => {
     }
   })
 
-  const nextCourse = () => setCurrentIndex((prev) => (prev + 1) % coursesWithAnalytics.length)
-  const prevCourse = () => setCurrentIndex((prev) => (prev - 1 + coursesWithAnalytics.length) % coursesWithAnalytics.length)
+  const courseCount = coursesWithAnalytics.length
+
+  const nextCourse = useCallback(
+    () => setCurrentIndex((prev) => (courseCount > 0 ? (prev + 1) % courseCount : 0)),
+    [courseCount]
+  )
+  const prevCourse = useCallback(
+    () => setCurrentIndex((prev) => (courseCount > 0 ? (prev - 1 + courseCount) % courseCount : 0)),
+    [courseCount]
+  )
 
   const course = coursesWithAnalytics[currentIndex] || {
     code: 'No Course',
@@ -219,13 +177,6 @@ const InstructorDashboard = () => {
     loScores: [],
     gradeDistribution: []
   }
-  const riskCount = course.studentsAtRisk ?? 0
-  const riskColorClass = riskCount > 10
-    ? 'text-danger-600'
-    : riskCount > 5
-      ? 'text-warning-600'
-      : 'text-success-600'
-
   // Get loading state for current course analytics
   const currentCourseAnalyticsLoading = courses.length > 0 && currentIndex < analyticsQueries.length
     ? analyticsQueries[currentIndex]?.isLoading
@@ -291,52 +242,12 @@ const InstructorDashboard = () => {
         )}
 
         {/* Stats Row */}
-        <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-4 gap-6">
-          <Card variant="flat" className="bg-white border-secondary-200">
-            <div className="flex items-center space-x-4">
-              <div className="p-3 bg-primary-100 rounded-xl">
-                <UserGroupIcon className="h-8 w-8 text-primary-600" />
-              </div>
-              <div>
-                <p className="text-sm text-secondary-600 font-medium">Students</p>
-                <p className="text-3xl font-bold text-secondary-900">{course.students}</p>
-              </div>
-            </div>
-          </Card>
-          <Card variant="flat" className="bg-white border-secondary-200">
-            <div className="flex items-center space-x-4">
-              <div className="p-3 bg-violet-100 rounded-xl">
-                <AcademicCapIcon className="h-8 w-8 text-violet-600" />
-              </div>
-              <div>
-                <p className="text-sm text-secondary-600 font-medium">Avg Score</p>
-                <p className="text-3xl font-bold text-secondary-900">{course.avgScore}<span className="text-lg text-secondary-400">/100</span></p>
-              </div>
-            </div>
-          </Card>
-          <Card variant="flat" className="bg-white border-secondary-200">
-            <div className="flex items-center space-x-4">
-              <div className="p-3 bg-danger-100 rounded-xl">
-                <ExclamationTriangleIcon className="h-8 w-8 text-danger-600" />
-              </div>
-              <div>
-                <p className="text-sm text-secondary-600 font-medium">Students at Risk</p>
-                <p className={`text-3xl font-bold ${riskColorClass}`}>{riskCount}</p>
-              </div>
-            </div>
-          </Card>
-          <Card variant="flat" className="bg-white border-secondary-200">
-            <div className="flex items-center space-x-4">
-              <div className="p-3 bg-violet-100 rounded-xl">
-                <BookOpenIcon className="h-8 w-8 text-violet-600" />
-              </div>
-              <div>
-                <p className="text-sm text-secondary-600 font-medium">Credits</p>
-                <p className="text-3xl font-bold text-secondary-900">{course.credits}</p>
-              </div>
-            </div>
-          </Card>
-        </div>
+        <CourseAnalyticsCard
+          studentCount={course.students ?? 0}
+          avgScore={course.avgScore ?? 0}
+          studentsAtRisk={course.studentsAtRisk ?? 0}
+          credits={course.credits}
+        />
 
         {/* Chart Card */}
         <Card className="overflow-hidden">
@@ -459,64 +370,9 @@ const InstructorDashboard = () => {
                 </div>
               </>
             ) : activeChart === 'bar' || activeChart === 'pie' ? (
-              <ChartWidget
-                key={`bar-chart-${course.id}`}
-                title=""
-                type="bar"
-                series={[{
-                  name: 'Students',
-                  data: (course.gradeDistribution || []).map(item => item.count)
-                }]}
-                options={{
-                  chart: {
-                    toolbar: { show: false }
-                  },
-                  plotOptions: {
-                    bar: {
-                      borderRadius: 6,
-                      horizontal: true,
-                      columnWidth: '50%',
-                      distributed: true,
-                    }
-                  },
-                  grid: {
-                    yaxis: {
-                      lines: { show: false }
-                    }
-                  },
-                  xaxis: {
-                    categories: (course.gradeDistribution || []).map(item => item.grade),
-                    labels: {
-                      style: {
-                        fontSize: '14px',
-                        fontWeight: 600
-                      }
-                    }
-                  },
-                  yaxis: {
-                    labels: {
-                      style: {
-                        fontSize: '13px'
-                      }
-                    }
-                  },
-                  colors: (course.gradeDistribution || []).map(item => item.color),
-                  legend: { show: false },
-                  dataLabels: {
-                    enabled: true,
-                    style: {
-                      fontSize: '12px',
-                      fontWeight: 'bold'
-                    }
-                  },
-                  tooltip: {
-                    y: {
-                      formatter: (val: number) => `${val} student${val !== 1 ? 's' : ''}`
-                    }
-                  }
-                }}
-                height={320}
-                className="shadow-none border-0 p-0"
+              <GradeDistributionChart
+                data={course.gradeDistribution || []}
+                courseId={course.id}
               />
             ) : null}
           </div>

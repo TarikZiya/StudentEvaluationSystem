@@ -1,6 +1,6 @@
 import React, { useState, useEffect, useMemo } from 'react'
 import { useQuery } from '@tanstack/react-query'
-import Modal from '../../../shared/components/ui/Modal'
+import Modal from '@/components/ui/custom/Modal'
 import {
   useCoreLearningOutcomesCreate,
   useCoreLearningOutcomesPartialUpdate,
@@ -130,8 +130,9 @@ const CreateEditLOModal: React.FC<CreateEditLOModalProps> = ({
             code: code.trim(),
             description: description.trim(),
             course_id: courseId,
-          } as any,
-        })
+          },
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
+        } as any)
       } else if (existingLo) {
         await updateMutation.mutateAsync({
           id: existingLo.id,
@@ -207,7 +208,7 @@ const CreateEditLOModal: React.FC<CreateEditLOModalProps> = ({
               className={inputClass}
             >
               <option value="">Select a template...</option>
-              {templateLOItems.map((t: any) => (
+              {templateLOItems.map((t: TemplateLearningOutcome) => (
                 <option key={t.id} value={t.id}>{t.code} - {t.description}</option>
               ))}
             </select>

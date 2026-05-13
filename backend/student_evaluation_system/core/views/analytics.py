@@ -2,7 +2,7 @@ from rest_framework import serializers as drf_serializers
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
-from django.db.models import Avg, F
+from django.db.models import Avg, Count, F
 from drf_spectacular.utils import extend_schema
 
 from core.permissions import IsAdminOrProgramHead
@@ -261,45 +261,72 @@ class ProgramStatsView(APIView):
                 return Response({"detail": "No program head profile found."}, status=403)
             programs = Program.objects.filter(pk=head_profile.program_id).select_related("department", "degree_level")
 
+        # 1. Get the list of programs and their IDs
+        program_list = list(programs)
+        program_ids = [p.id for p in program_list]
+
+        # 2. Fetch aggregations independently and map them by program_id
+        # Total Courses
+        courses_qs = (
+            Course.objects.filter(program__in=program_ids)
+            .values("program")
+            .annotate(total=Count("id"))
+            .values_list("program", "total")
+        )
+        courses_map = dict(courses_qs)
+
+        # Total Students (Distinct per program)
+        students_qs = (
+            CourseEnrollment.objects.filter(course__program__in=program_ids)
+            .values("course__program")
+            .annotate(total=Count("student_id", distinct=True))
+            .values_list("course__program", "total")
+        )
+        students_map = dict(students_qs)
+
+        # Program Outcome Average and Count
+        po_stats_qs = (
+            StudentProgramOutcomeScore.objects.filter(program_outcome__program__in=program_ids)
+            .values("program_outcome__program")
+            .annotate(avg_score=Avg("score"), total_count=Count("id"))
+            .values_list("program_outcome__program", "avg_score", "total_count")
+        )
+        po_map = {row[0]: {"avg": row[1], "count": row[2]} for row in po_stats_qs}
+
+        # Learning Outcome Count
+        lo_qs = (
+            StudentLearningOutcomeScore.objects.filter(learning_outcome__course__program__in=program_ids)
+            .values("learning_outcome__course__program")
+            .annotate(total=Count("id"))
+            .values_list("learning_outcome__course__program", "total")
+        )
+        lo_map = dict(lo_qs)
+
+        # Batch collect course/PO IDs (just like you had)
+        all_course_ids = list(Course.objects.filter(program__in=program_ids).values_list("id", flat=True))
+        all_po_ids = list(ProgramOutcome.objects.filter(program__in=program_ids).values_list("id", flat=True))
+
+        # 3. Build the final response list in Python (O(N) time complexity)
         program_stats = []
-        all_course_ids = []
-        all_po_ids = []
         max_duration_years = 4
-        for program in programs:
-            prog_courses = Course.objects.filter(program=program)
-            prog_course_ids = list(prog_courses.values_list("id", flat=True))
-            all_course_ids.extend(prog_course_ids)
 
-            total_students = (
-                CourseEnrollment.objects.filter(course_id__in=prog_course_ids).values("student_id").distinct().count()
-            )
-
-            total_courses = Course.objects.filter(program=program).count()
-
-            prog_po_ids = list(ProgramOutcome.objects.filter(program=program).values_list("id", flat=True))
-            all_po_ids.extend(prog_po_ids)
-            po_avg = StudentProgramOutcomeScore.objects.filter(program_outcome_id__in=prog_po_ids).aggregate(
-                avg_score=Avg("score")
-            )["avg_score"]
-
-            lo_count = StudentLearningOutcomeScore.objects.filter(learning_outcome__course_id__in=prog_course_ids).count()
-
-            po_count = StudentProgramOutcomeScore.objects.filter(program_outcome_id__in=prog_po_ids).count()
-
-            max_duration_years = max(max_duration_years, program.duration_years)
+        for p in program_list:
+            po_data = po_map.get(p.id, {"avg": None, "count": 0})
+            avg_score = round(po_data["avg"], 2) if po_data["avg"] is not None else None
 
             program_stats.append(
                 {
-                    "id": program.id,
-                    "code": program.code,
-                    "name": program.name,
-                    "total_students": total_students,
-                    "total_courses": total_courses,
-                    "avg_score": round(po_avg, 2) if po_avg is not None else None,
-                    "lo_count": lo_count,
-                    "po_count": po_count,
+                    "id": p.id,
+                    "code": p.code,
+                    "name": p.name,
+                    "total_students": students_map.get(p.id, 0),
+                    "total_courses": courses_map.get(p.id, 0),
+                    "avg_score": avg_score,
+                    "lo_count": lo_map.get(p.id, 0),
+                    "po_count": po_data["count"],
                 }
             )
+            max_duration_years = max(max_duration_years, p.duration_years)
 
         year_level_breakdown = _calculate_year_level_breakdown(all_course_ids, all_po_ids, max_duration_years)
 

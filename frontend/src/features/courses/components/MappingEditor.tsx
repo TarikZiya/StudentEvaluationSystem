@@ -13,7 +13,14 @@ import {
 } from '@dnd-kit/core'
 import { useDraggable, useDroppable } from '@dnd-kit/core'
 import { CSS } from '@dnd-kit/utilities'
-import { Card } from '../../../shared/components/ui/Card'
+import { Card } from '@/components/ui/custom/Card'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+  DialogFooter,
+} from '@/components/ui/shadcn/Dialog'
 import {
   XMarkIcon,
   LinkIcon,
@@ -49,6 +56,7 @@ import type {
   ProgramOutcome,
   WeightSuggestionJobResult,
 } from '../../../shared/api/model'
+import { isRecord } from '@/shared/utils/guards'
 import { useRecomputeJobs } from '../../../shared/contexts/RecomputeJobsContext'
 import { AssessmentDescriptionsModal } from './AssessmentDescriptionsModal'
 
@@ -59,9 +67,6 @@ type DragItemData = {
   name?: string
   code?: string
 }
-
-const isRecord = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null
 
 const toList = <T,>(value: unknown): T[] => {
   if (Array.isArray(value)) {
@@ -203,9 +208,11 @@ const WeightModal = ({
   if (!isOpen) return null
 
   return (
-    <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50">
-      <div className="bg-white rounded-xl p-6 w-96 shadow-xl">
-        <h3 className="text-lg font-semibold text-gray-900 mb-4">{title}</h3>
+    <Dialog open={isOpen} onOpenChange={(open) => { if (!open) onClose() }}>
+      <DialogContent className="sm:max-w-sm !z-[10000]" overlayClassName="!z-[10000]">
+        <DialogHeader>
+          <DialogTitle>{title}</DialogTitle>
+        </DialogHeader>
         <div className="space-y-4">
           <div className="flex items-center gap-2 text-sm text-gray-600">
             <span className="font-medium">{fromLabel}</span>
@@ -239,28 +246,28 @@ const WeightModal = ({
               <span>{maxAllowedWeight}</span>
             </div>
           </div>
-
-          <div className="flex gap-3 mt-6">
-            <button
-              onClick={onClose}
-              className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
-            >
-              Cancel
-            </button>
-            <button
-              onClick={() => {
-                const finalWeight = weight
-                onConfirm(finalWeight)
-              }}
-              disabled={weight <= 0}
-              className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
-            >
-              {editMode ? 'Update Mapping' : 'Create Mapping'}
-            </button>
-          </div>
         </div>
-      </div>
-    </div>
+
+        <DialogFooter>
+          <button
+            onClick={onClose}
+            className="flex-1 px-4 py-2 border border-gray-300 rounded-lg text-gray-700 hover:bg-gray-50"
+          >
+            Cancel
+          </button>
+          <button
+            onClick={() => {
+              const finalWeight = weight
+              onConfirm(finalWeight)
+            }}
+            disabled={weight <= 0}
+            className="flex-1 px-4 py-2 bg-primary-600 text-white rounded-lg hover:bg-primary-700 disabled:bg-gray-300 disabled:cursor-not-allowed"
+          >
+            {editMode ? 'Update Mapping' : 'Create Mapping'}
+          </button>
+        </DialogFooter>
+      </DialogContent>
+    </Dialog>
   )
 }
 
@@ -491,7 +498,9 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
       const aloDiff = computeDiff(workingAssessmentLOMappings, initialAssessmentLOMappings)
       const lopoDiff = computeDiff(workingLoPOMappings, initialLoPOMappings)
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const aloResult: any = await aloBulkSyncMutation.mutateAsync({
+        /* eslint-disable @typescript-eslint/no-explicit-any */
         data: {
           course_id: courseId,
           creates: aloDiff.creates.map(m => ({
@@ -503,9 +512,12 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
           updates: aloDiff.updates,
           deletes: aloDiff.deletes,
         } as any,
+        /* eslint-enable @typescript-eslint/no-explicit-any */
       })
 
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
       const lopoResult: any = await lopoBulkSyncMutation.mutateAsync({
+        /* eslint-disable @typescript-eslint/no-explicit-any */
         data: {
           course_id: courseId,
           creates: lopoDiff.creates.map(m => ({
@@ -517,6 +529,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
           updates: lopoDiff.updates,
           deletes: lopoDiff.deletes,
         } as any,
+        /* eslint-enable @typescript-eslint/no-explicit-any */
       })
 
       // Replace temp IDs with real IDs
@@ -528,12 +541,14 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
         if (item.temp_id) tempIdMap.set(item.temp_id, item.id)
       }
 
-      const updatedALO = workingAssessmentLOMappings.map(m =>
-        tempIdMap.has(m.id) ? { ...m, id: tempIdMap.get(m.id)! } : m
-      )
-      const updatedLOPO = workingLoPOMappings.map(m =>
-        tempIdMap.has(m.id) ? { ...m, id: tempIdMap.get(m.id)! } : m
-      )
+      const updatedALO = workingAssessmentLOMappings.map(m => {
+        const newId = tempIdMap.get(m.id)
+        return newId !== undefined ? { ...m, id: newId } : m
+      })
+      const updatedLOPO = workingLoPOMappings.map(m => {
+        const newId = tempIdMap.get(m.id)
+        return newId !== undefined ? { ...m, id: newId } : m
+      })
 
       setWorkingAssessmentLOMappings(updatedALO)
       setWorkingLoPOMappings(updatedLOPO)
@@ -554,7 +569,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
       const allJobIds = [
         ...(aloResult?.recompute_job_ids || []),
         ...(lopoResult?.recompute_job_ids || []),
-      ].map((id: any) => ({ id, status: 'pending' as const }))
+      ].map((id: number) => ({ id, status: 'pending' as const }))
       if (allJobIds.length > 0) {
         enqueueJobs(allJobIds)
       }
@@ -588,6 +603,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
       // Create new mapping in working state with temp negative ID
       const tempId = -Date.now()
       if (weightModal.type === 'assessment-lo') {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const newMapping: any = {
           id: tempId,
           assessment: weightModal.fromId,
@@ -597,6 +613,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
         }
         setWorkingAssessmentLOMappings(prev => [...prev, newMapping])
       } else {
+        // eslint-disable-next-line @typescript-eslint/no-explicit-any
         const newMapping: any = {
           id: tempId,
           course: courseId,
@@ -638,6 +655,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
   }
 
   const queueWeightSuggestion = async () => {
+    /* eslint-disable @typescript-eslint/no-explicit-any */
     setIsSuggesting(true)
     setSuggestionError(null)
     try {
@@ -769,6 +787,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
     } finally {
       setIsSuggesting(false)
     }
+    /* eslint-enable @typescript-eslint/no-explicit-any */
   }
 
   const handleSuggestWeights = async () => {
@@ -785,10 +804,42 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
     await queueWeightSuggestion()
   }
 
-  if (isLoading) {
+  const showSkeleton = isLoading || !hasInitialized
+
+  if (showSkeleton) {
     return (
-      <div className="flex justify-center items-center min-h-96">
-        <div className="animate-spin rounded-full h-12 w-12 border-b-4 border-primary-600"></div>
+      <div className="flex flex-col gap-6 p-6">
+        <div className="flex items-center justify-between">
+          <div className="space-y-2">
+            <div className="h-7 w-56 bg-gray-200 rounded animate-pulse" />
+            <div className="h-4 w-96 bg-gray-100 rounded animate-pulse" />
+          </div>
+          <div className="flex items-center gap-3">
+            <div className="h-9 w-36 bg-gray-200 rounded-lg animate-pulse" />
+            <div className="h-9 w-9 bg-gray-200 rounded-lg animate-pulse" />
+          </div>
+        </div>
+        <div className="grid grid-cols-3 gap-6">
+          {[0, 1, 2].map((i) => (
+            <div key={i} className="bg-white rounded-xl border border-gray-200 p-4 space-y-3">
+              <div className="flex items-center gap-2">
+                <div className="h-5 w-5 bg-gray-200 rounded animate-pulse" />
+                <div className="h-5 w-28 bg-gray-200 rounded animate-pulse" />
+              </div>
+              {[0, 1, 2, 3].map((j) => (
+                <div
+                  key={j}
+                  className="h-12 bg-gray-100 rounded-lg animate-pulse"
+                  style={{ animationDelay: `${j * 100}ms` }}
+                />
+              ))}
+            </div>
+          ))}
+        </div>
+        <div className="flex items-center justify-end gap-3 pt-4 border-t border-gray-200">
+          <div className="h-10 w-32 bg-gray-200 rounded-lg animate-pulse" />
+          <div className="h-10 w-32 bg-gray-200 rounded-lg animate-pulse" />
+        </div>
       </div>
     )
   }
@@ -1198,7 +1249,7 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
             ↺ Reset Changes
           </button>
           <button
-            onClick={() => handleSave(false)}
+            onClick={() => handleSave(true)}
             disabled={!hasChanges || isSaving}
             className={`px-4 py-2 rounded-lg text-sm font-medium transition-colors ${
               hasChanges && !isSaving
@@ -1240,43 +1291,43 @@ const MappingEditor = ({ courseId, termId, onClose }: MappingEditorProps) => {
         />
       )}
       {/* Close Confirmation Dialog */}
-      {showCloseConfirm && (
-        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-[10001]">
-          <div className="bg-white rounded-xl p-6 max-w-sm w-full shadow-xl">
-            <h3 className="text-lg font-semibold text-gray-900 mb-2">Unsaved Changes</h3>
-            <p className="text-sm text-gray-600 mb-6">
-              You have unsaved mapping changes. What would you like to do?
-            </p>
-            <div className="flex gap-2 justify-end">
-              <button
-                onClick={() => setShowCloseConfirm(false)}
-                className="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
-              >
-                Keep Editing
-              </button>
-              <button
-                onClick={() => {
-                  handleReset()
-                  setShowCloseConfirm(false)
-                  onClose?.()
-                }}
-                className="px-3 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
-              >
-                Discard
-              </button>
-              <button
-                onClick={async () => {
-                  setShowCloseConfirm(false)
-                  await handleSave(true)
-                }}
-                className="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
-              >
-                Save & Close
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
+      <Dialog open={showCloseConfirm} onOpenChange={(open) => { if (!open) setShowCloseConfirm(false) }}>
+        <DialogContent className="sm:max-w-sm !z-[10000]" overlayClassName="!z-[10000]">
+          <DialogHeader>
+            <DialogTitle>Unsaved Changes</DialogTitle>
+          </DialogHeader>
+          <p className="text-sm text-gray-600">
+            You have unsaved mapping changes. What would you like to do?
+          </p>
+          <DialogFooter>
+            <button
+              onClick={() => setShowCloseConfirm(false)}
+              className="px-3 py-2 text-sm font-medium text-gray-700 border border-gray-300 rounded-lg hover:bg-gray-50"
+            >
+              Keep Editing
+            </button>
+            <button
+              onClick={() => {
+                handleReset()
+                setShowCloseConfirm(false)
+                onClose?.()
+              }}
+              className="px-3 py-2 text-sm font-medium text-white bg-red-600 rounded-lg hover:bg-red-700"
+            >
+              Discard
+            </button>
+            <button
+              onClick={async () => {
+                setShowCloseConfirm(false)
+                await handleSave(true)
+              }}
+              className="px-3 py-2 text-sm font-medium text-white bg-blue-600 rounded-lg hover:bg-blue-700"
+            >
+              Save & Close
+            </button>
+          </DialogFooter>
+        </DialogContent>
+      </Dialog>
       <AssessmentDescriptionsModal
         isOpen={showDescriptionsModal}
         onClose={() => setShowDescriptionsModal(false)}

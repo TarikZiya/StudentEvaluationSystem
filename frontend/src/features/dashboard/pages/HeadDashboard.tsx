@@ -1,6 +1,6 @@
-import { useMemo, useState } from 'react'
-import { Card } from '../../../shared/components/ui/Card'
-import { LazyChartWidget as ChartWidget } from '../../../shared/components/ui/LazyChartWidget'
+import { useMemo, useState, useCallback } from 'react'
+import { Card } from '@/components/ui/custom/Card'
+import { LazyChartWidget as ChartWidget } from '@/components/ui/custom/LazyChartWidget'
 import {
   UserGroupIcon,
   BookOpenIcon,
@@ -9,9 +9,12 @@ import {
 import { useCoreAnalyticsProgramStatsRetrieve } from '../../../shared/api/generated/analytics/analytics'
 
 const HeadDashboard = () => {
-  const { data: statsData, isLoading } = useCoreAnalyticsProgramStatsRetrieve()
+  const { data: statsData, isLoading, error, refetch } = useCoreAnalyticsProgramStatsRetrieve()
 
   const [activeChart, setActiveChart] = useState<'gpa' | 'po'>('gpa')
+
+  const handleSetGpaChart = useCallback(() => setActiveChart('gpa'), [])
+  const handleSetPoChart = useCallback(() => setActiveChart('po'), [])
 
   const programs = useMemo(() => statsData?.programs || [], [statsData])
 
@@ -28,6 +31,20 @@ const HeadDashboard = () => {
 
   if (isLoading) {
     return <div className="flex justify-center items-center h-96">Loading...</div>
+  }
+
+  if (error) {
+    return (
+      <div className="bg-red-50 border border-red-200 rounded-lg p-6">
+        <div className="text-red-800">An error occurred while loading the dashboard. Please try again.</div>
+        <button
+          onClick={() => refetch()}
+          className="mt-3 px-4 py-2 bg-danger-600 text-white text-sm font-semibold rounded-lg hover:bg-danger-700 transition-colors"
+        >
+          Try Again
+        </button>
+      </div>
+    )
   }
 
   const categories = ['1st Year', '2nd Year', '3rd Year', '4th Year'].slice(0, yearLevelBreakdown.length)
@@ -102,7 +119,7 @@ const HeadDashboard = () => {
             <h2 className="text-lg font-semibold text-gray-900">Score Averages by Year</h2>
             <div className="flex gap-2">
               <button
-                onClick={() => setActiveChart('gpa')}
+                onClick={handleSetGpaChart}
                 className={`px-3 py-1.5 text-sm rounded-lg transition ${
                   activeChart === 'gpa'
                     ? 'bg-primary-600 text-white'
@@ -112,7 +129,7 @@ const HeadDashboard = () => {
                 GPA Averages
               </button>
               <button
-                onClick={() => setActiveChart('po')}
+                onClick={handleSetPoChart}
                 className={`px-3 py-1.5 text-sm rounded-lg transition ${
                   activeChart === 'po'
                     ? 'bg-primary-600 text-white'

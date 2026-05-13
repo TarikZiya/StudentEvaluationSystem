@@ -40,13 +40,13 @@ class Term(models.Model):
         is_active (bool): Whether this is the currently active term.
     """
 
-    name = models.CharField(max_length=100, help_text="e.g., Fall 2025")
+    name = models.CharField(max_length=100, help_text="e.g., Güz 2024-2025")
     is_active = models.BooleanField(default=False, db_index=True)
     academic_year = models.IntegerField(
-        null=True, blank=True, help_text="The calendar year the academic year starts (e.g., 2024 for AY 2024-2025)"
+        null=True, blank=True, help_text="The calendar year the semester starts (e.g., 2024 for Güz 2024-2025)"
     )
     semester = models.CharField(
-        max_length=10, choices=[("fall", "Fall"), ("spring", "Spring"), ("summer", "Summer")], default="fall"
+        max_length=10, choices=[("fall", "Güz"), ("spring", "Bahar"), ("summer", "Yaz")], default="fall"
     )
 
     class Meta:
@@ -689,3 +689,71 @@ class WeightSuggestionJob(TimeStampedModel):
     def __str__(self):
         course_id = self.course_id if self.course_id is not None else "-"
         return f"WeightSuggestionJob {self.id}: course={course_id} status={self.status}"
+
+
+class AuditLog(models.Model):
+    ACTION_CHOICES = [
+        ("CREATE", "Create"),
+        ("UPDATE", "Update"),
+        ("DELETE", "Delete"),
+        ("TRANSITION", "Term Transition"),
+        ("IMPORT", "File Import"),
+        ("APPROVE", "Approval"),
+    ]
+
+    user = models.ForeignKey(
+        settings.AUTH_USER_MODEL,
+        on_delete=models.PROTECT,
+        related_name="audit_logs",
+    )
+    action = models.CharField(max_length=20, choices=ACTION_CHOICES, db_index=True)
+    model_name = models.CharField(max_length=100)
+    object_id = models.PositiveIntegerField(null=True, blank=True)
+    before_snapshot = models.JSONField(null=True, blank=True)
+    after_snapshot = models.JSONField(null=True, blank=True)
+    metadata = models.JSONField(default=dict)
+    ip_address = models.GenericIPAddressField(null=True, blank=True)
+    user_agent = models.TextField(blank=True)
+    timestamp = models.DateTimeField(auto_now_add=True, db_index=True)
+
+    class Meta:
+        ordering = ["-timestamp"]
+        indexes = [
+            models.Index(fields=["model_name", "object_id"]),
+            models.Index(fields=["user", "-timestamp"]),
+            models.Index(fields=["action", "-timestamp"]),
+        ]
+        verbose_name = "Audit Log Entry"
+        verbose_name_plural = "Audit Log Entries"
+
+    def __str__(self):
+        return f"{self.action} {self.model_name}#{self.object_id} by {self.user} at {self.timestamp}"
+
+
+class TermTransitionJob(models.Model):
+    STATUS_CHOICES = [
+        ("pending", "Pending"),
+        ("running", "Running"),
+        ("success", "Success"),
+        ("failed", "Failed"),
+    ]
+
+    old_term = models.ForeignKey(Term, on_delete=models.PROTECT, related_name="transitions_from")
+    new_term = models.ForeignKey(Term, on_delete=models.PROTECT, related_name="transitions_to")
+    triggered_by = models.ForeignKey(settings.AUTH_USER_MODEL, on_delete=models.PROTECT, related_name="term_transitions")
+    template_ids = models.JSONField(default=list)
+    status = models.CharField(max_length=20, choices=STATUS_CHOICES, default="pending", db_index=True)
+    courses_created = models.PositiveIntegerField(default=0)
+    celery_task_id = models.CharField(max_length=255, blank=True, null=True)
+    error = models.TextField(blank=True, null=True)
+    started_at = models.DateTimeField(null=True, blank=True)
+    finished_at = models.DateTimeField(null=True, blank=True)
+    created_at = models.DateTimeField(auto_now_add=True)
+
+    class Meta:
+        ordering = ["-created_at"]
+        verbose_name = "Term Transition Job"
+        verbose_name_plural = "Term Transition Jobs"
+
+    def __str__(self):
+        return f"TermTransition {self.old_term} -> {self.new_term} ({self.status})"
