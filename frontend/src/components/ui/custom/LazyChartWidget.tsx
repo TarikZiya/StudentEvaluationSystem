@@ -1,12 +1,9 @@
-import { lazy, Suspense } from 'react'
+import { useState, useEffect, type ComponentType } from 'react'
 import type { ChartWidgetProps } from './ChartWidget'
 
-// Lazy load the actual ChartWidget component (and ApexCharts with it)
-const ChartWidget = lazy(() => import('./ChartWidget').then(module => ({
-  default: module.ChartWidget
-})))
+let ChartComponent: ComponentType<ChartWidgetProps> | null = null
+let loadPromise: Promise<void> | null = null
 
-// Skeleton/placeholder while chart loads
 function ChartLoadingSkeleton({ height = 350 }: { height?: number }) {
   return (
     <div
@@ -21,11 +18,37 @@ function ChartLoadingSkeleton({ height = 350 }: { height?: number }) {
   )
 }
 
-// Export wrapper that adds Suspense
 export function LazyChartWidget(props: ChartWidgetProps) {
-  return (
-    <Suspense fallback={<ChartLoadingSkeleton height={props.height} />}>
-      <ChartWidget {...props} />
-    </Suspense>
-  )
+  // 1. Wrap the initial state in a callback
+  const [Component, setComponent] = useState<ComponentType<ChartWidgetProps> | null>(() => ChartComponent)
+
+  useEffect(() => {
+    if (ChartComponent) {
+      // 2. Wrap the setter in a callback
+      setComponent(() => ChartComponent)
+      return
+    }
+
+    if (!loadPromise) {
+      loadPromise = import('./ChartWidget').then(m => {
+        ChartComponent = m.ChartWidget
+      })
+    }
+
+    let cancelled = false
+    loadPromise.then(() => {
+      if (!cancelled) {
+        // 3. Wrap the setter in a callback
+        setComponent(() => ChartComponent)
+      }
+    })
+
+    return () => { cancelled = true }
+  }, [])
+
+  if (!Component) {
+    return <ChartLoadingSkeleton height={props.height} />
+  }
+
+  return <Component {...props} />
 }
