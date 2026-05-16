@@ -76,7 +76,12 @@ Thumbs.db
 # =============================================================================
 .ai-agents/
 .claude/
-.opencode/
+.opencode/node_modules/
+.opencode/package.json
+.opencode/package-lock.json
+.opencode/bun.lock
+.opencode/old-commands/
+.opencode/old-skills/
 openspec/
 .superpowers/
 
