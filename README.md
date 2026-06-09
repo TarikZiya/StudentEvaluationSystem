@@ -1,3 +1,14 @@
+## Project Information
+
+This repository contains the Senior Design Project titled **Student Evaluation System (SES)**, developed at Acıbadem University by:
+
+- Yusuf Eren Arı
+- Tarık Ziya Aykut
+- Ammar Yasir Bayır
+- Vefa Mert Toker
+
+The system maps course grades to Learning Outcomes and Program Outcomes, generating outcome-based student performance reports beyond a single GPA value.
+
 # Student Evaluation System (SES)
 
 Student Evaluation System (SES) is an outcome-based assessment platform for higher education.
