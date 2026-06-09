@@ -22,7 +22,7 @@ jobs:
         working-directory: backend
         run: |
           bandit -r student_evaluation_system/ -f json -o bandit-report.json || true
-          bandit -r student_evaluation_system/ -f screen || true
+          bandit -r student_evaluation_system/ -lll -f screen
       - name: Upload Bandit report
         uses: actions/upload-artifact@v4
         if: always()
